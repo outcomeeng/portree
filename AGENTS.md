@@ -1,143 +1,63 @@
-# AI Agent Instructions for Portree
+# AGENTS.md
 
-## IMPORTANT: Auto-Execution Behavior
+This file provides guidance to [Codex](https://openai.com/codex) and [Claude Code](https://claude.ai/code) when working with code in this repository.
 
-This project uses **portree** for multi-branch development. AI agents should **automatically** manage services without waiting for explicit commands.
-
-### On Session Start
-
-**AUTOMATICALLY execute when beginning work:**
+## Commands
 
 ```bash
-# Check if portree project
-if [ -f .portree.toml ]; then
-  # Start services
-  portree up
+make build          # build ./portree binary (injects version/commit/date via ldflags)
+make test           # go test ./... -race -count=1 -v
+make test-short     # go test ./... -short -count=1 (what pre-commit runs)
+make lint           # golangci-lint run ./...
+make fmt            # gofmt + goimports
+make vet            # go vet ./...
+make all            # fmt vet lint test build
 
-  # Enable subdomain routing
-  portree proxy start
+# Single test
+go test ./cmd/... -run TestUpDownCommand -race -count=1 -v
+go test ./internal/port/... -run TestAllocate -race -count=1 -v
 
-  # Open browser
-  portree open
-fi
+# Activate git hooks (runs vet + lint + test-short on commit)
+make setup-hooks
 ```
 
-Then report to user:
+## Architecture
+
+portree is a single-binary CLI (Cobra) that manages dev-server processes across git worktrees and routes them via a subdomain reverse proxy.
+
 ```
-Started portree services:
-- frontend: http://main.localhost:3000
-- backend: http://main.localhost:8000
-Browser opened.
-```
-
-### On Branch Switch
-
-**AUTOMATICALLY execute when user switches to or mentions a branch:**
-
-```bash
-# Create worktree if needed
-portree add <branch> 2>/dev/null || true
-
-# Navigate to worktree (if not already there)
-cd "$(git worktree list | grep '<branch>' | head -1 | awk '{print $1}')" 2>/dev/null || true
-
-# Start services
-portree up
-
-# Open browser
-portree open
+main.go → cmd.Execute()
+cmd/root.go   PersistentPreRunE: detects repo root (git.FindRepoRoot), loads config.Load()
+               sets package-level globals: repoRoot, cfg
+cmd/<sub>.go  each subcommand; annotate Annotations["skipRepoDetection"]="true" to bypass PersistentPreRunE
 ```
 
-### On "Compare Branches" Request
+**Cobra exit-code contract** — `SilenceErrors: true` is set on rootCmd. Sub-commands return a non-nil error from `RunE` on failure. `main.go` calls `os.Exit(1)` when `cmd.Execute()` returns an error. Commands that call `return nil` on failure exit 0 — indistinguishable from success.
 
-**AUTOMATICALLY execute:**
+**Port allocation** — `internal/port/allocator.go` derives ports via `FNV32(branch:service) % range`. Collisions fall back to linear probing within the range. Assignments are persisted in `.portree/state.json` so ports are stable across restarts.
 
-```bash
-portree up --all
-portree proxy start
-```
+**State** — `.portree/state.json` (relative to the main worktree root). File-level locking via `internal/state/store.go` (`flock`). Holds per-service `{port, pid, status}`, proxy PIDs, and port assignments.
 
-Report URLs:
-```
-Branches running:
-- main: http://main.localhost:3000
-- feature-x: http://feature-x.localhost:3000
-```
+**Process management** — `internal/process/runner.go` starts each service as `sh -c <command>` with a process group. Graceful shutdown: SIGTERM → SIGKILL. Logs: `.portree/logs/<branch-slug>.<service>.log`.
 
-### On Session End / Cleanup
+**Proxy** — `internal/proxy/server.go` runs one HTTP listener per `proxy_port`. `internal/proxy/resolver.go` extracts the subdomain slug from the `Host` header and maps it to the allocated port.
 
-**When user says "done", "finished", "終わり", etc.:**
+**TUI** — `internal/tui/` is a Bubble Tea application. `app.go` is the top-level model; `dashboard.go` renders the service table; `keys.go` defines key bindings.
 
-```bash
-portree down --all
-```
+## Testing conventions
 
----
+Tests in `cmd/cmd_test.go` share process-level state (Cobra globals + `os.Chdir`). Use `resetRootCmd()` before each test and **do not call `t.Parallel()`** in tests that use `setupGitRepo`/`setupTestRepo` — those call `os.Chdir` which is process-wide.
 
-## Quick Reference
+Test level is encoded in the filename (spec-tree convention):
 
-### Commands
-```bash
-portree up              # Start current branch
-portree up --all        # Start all branches
-portree down            # Stop current
-portree down --all      # Stop all
-portree proxy start     # Enable subdomain routing
-portree open [service]  # Open browser
-portree ls              # Show status
-portree dash            # Interactive dashboard
-portree add <branch>    # Create worktree
-portree remove <branch> # Remove worktree
-```
+| Level | Pattern                           |
+| ----- | --------------------------------- |
+| L1    | `{subject}_{evidence}_l1_test.go` |
+| L2    | `{subject}_{evidence}_l2_test.go` |
+| L3    | `{subject}_{evidence}_l3_test.go` |
 
-### URL Pattern
-```
-http://<branch-slug>.localhost:<proxy-port>
-```
-Examples:
-- `http://main.localhost:3000`
-- `http://feature-auth.localhost:3000`
+L2 tests that exercise the compiled binary build it in `TestMain` by walking up from the test file to `go.mod` then calling `go build`. See `spx/CLAUDE.md` for the scaffold.
 
-### Environment Variables (injected into services)
-| Variable | Description |
-|----------|-------------|
-| `PORT` | Assigned port |
-| `PT_BRANCH` | Branch name |
-| `PT_BRANCH_SLUG` | URL-safe branch |
-| `PT_{SERVICE}_PORT` | Other service's port |
-| `PT_{SERVICE}_URL` | Other service's proxy URL |
+## Spec tree (spx/)
 
-### Configuration (.portree.toml)
-```toml
-[services.frontend]
-command = "npm run dev"
-port_env = "PORT"
-port_range = [3100, 3199]
-
-[services.backend]
-command = "go run ."
-port_range = [8100, 8199]
-```
-
----
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Service won't start | `portree doctor` |
-| Port in use | `lsof -i :<port>` then kill process |
-| Proxy not working | `portree proxy start` |
-| Logs | `~/.portree/logs/<branch>.<service>.log` |
-
----
-
-## Installation
-
-```bash
-# macOS
-brew install fairy-pitta/tap/portree
-
-# Other
-# Download from https://github.com/fairy-pitta/portree/releases
-```
+Product specs live in `spx/`. Before any spec-tree work, read `spx/CLAUDE.md` — it documents the skill invocation sequence, node naming rules, sparse-integer ordering, and assertion-test linking contract.
