@@ -143,6 +143,69 @@ Test level is encoded in the filename.
 | 2     | `{subject}_{evidence}_l2_test.go` | `cli_scenario_l2_test.go`      |
 | 3     | `{subject}_{evidence}_l3_test.go` | `workflow_scenario_l3_test.go` |
 
+### L2 Binary Test Pattern
+
+L2 tests that exercise the compiled binary follow this scaffold:
+
+```go
+var binaryPath string
+
+func TestMain(m *testing.M) {
+    // Find the project root by walking up from this test file until go.mod is found.
+    _, file, _, _ := runtime.Caller(0)
+    dir := filepath.Dir(file)
+    for {
+        if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+            break
+        }
+        dir = filepath.Dir(dir)
+    }
+    // Build the binary into a temp location.
+    tmp, _ := os.MkdirTemp("", "portree-test-*")
+    defer os.RemoveAll(tmp)
+    binaryPath = filepath.Join(tmp, "portree")
+    cmd := exec.Command("go", "build", "-o", binaryPath, filepath.Join(dir, "cmd/portree"))
+    cmd.Dir = dir
+    if out, err := cmd.CombinedOutput(); err != nil {
+        fmt.Fprintf(os.Stderr, "build failed: %v\n%s", err, out)
+        os.Exit(1)
+    }
+    os.Exit(m.Run())
+}
+```
+
+The root-finding walk is required because `go test ./spx/...` sets the working directory to the test file's package, not the project root. Hardcoded relative paths break across worktrees with different parent directory depths.
+
+---
+
+## Cobra Exit-Code Contract
+
+`SilenceErrors: true` is set on the root command. Each sub-command's `RunE` returns a non-nil error on failure. `main.go` calls `os.Exit(1)` when `cmd.Execute()` returns an error. Without this contract, commands that detect failures but call `return nil` exit 0 — indistinguishable from success to callers and CI.
+
+The pattern:
+
+```go
+// cmd/root.go
+var rootCmd = &cobra.Command{
+    SilenceErrors: true,
+    SilenceUsage:  true,
+}
+
+// cmd/doctor.go (or any sub-command)
+RunE: func(cmd *cobra.Command, args []string) error {
+    if !allChecksOK {
+        return fmt.Errorf("doctor: one or more checks failed")
+    }
+    return nil
+},
+
+// main.go
+if err := cmd.Execute(); err != nil {
+    fmt.Fprintln(os.Stderr, err)
+    os.Exit(1)
+}
+```
+
 ---
 
 ## Assertion-Test Contract
