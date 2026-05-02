@@ -56,12 +56,14 @@ var doctorCmd = &cobra.Command{
 			}
 		}
 
-		printResults(results)
+		if !printResults(results) {
+			return fmt.Errorf("doctor: one or more checks failed")
+		}
 		return nil
 	},
 }
 
-func printResults(results []checkResult) {
+func printResults(results []checkResult) bool {
 	allOK := true
 	for _, r := range results {
 		mark := "✓"
@@ -80,6 +82,7 @@ func printResults(results []checkResult) {
 	} else {
 		fmt.Println("\nSome checks failed. See details above.")
 	}
+	return allOK
 }
 
 func checkGit() checkResult {
