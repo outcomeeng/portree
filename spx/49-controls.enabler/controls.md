@@ -1,6 +1,6 @@
 # Controls
 
-PROVIDES CLI commands (`up`, `down`, `ls`, `open`, `proxy`, `doctor`, `init`, `reset`, `dash`) and TUI dashboard
+PROVIDES CLI commands (`up`, `down`, `ls`, `status`, `open`, `proxy`, `doctor`, `init`, `reset`, `dash`) and TUI dashboard
 SO THAT developers
 CAN manage portree services from the terminal and discover service endpoints programmatically
 
@@ -30,6 +30,14 @@ CAN manage portree services from the terminal and discover service endpoints pro
 - Given no other worktree has running services, when `portree down --release-proxy` runs, then the proxy is stopped and its port is freed ([test](tests/controls_multiworktree_l2_test.go))
 - Given at least one other worktree has running services, when `portree down --release-proxy` runs, then the proxy is left alone and its PID is unchanged ([test](tests/controls_multiworktree_l2_test.go))
 - Given a `.portree.toml` exists in a linked worktree's checkout, when any portree command runs from that worktree, then the file is ignored and the main worktree's config is used ([test](tests/controls_multiworktree_l2_test.go))
+- Given services running in the calling worktree, when `portree status` runs, then output reports the worktree's name and slug, plus each configured service with port, PID, status, direct URL, and proxy URL with independent reachability indicators ([test](tests/controls_status_l2_test.go))
+- Given the proxy is running, when `portree status` runs, then a `Proxy` block reports running, PID, listening ports, and healthy; given the proxy is not running, the block reports `not running` ([test](tests/controls_status_l2_test.go))
+- Given a service whose direct port is reachable but the proxy returns 5xx for that service's URL, when `portree status` runs, then the service's `direct_reachable` is `true` and its `proxy_reachable` is `false` ([test](tests/controls_status_l2_test.go))
+- Given `portree status --json` runs, then output is valid JSON with top-level `worktree`, `slug`, `services` (array), and `proxy` (object); each service entry contains `name`, `port`, `status`, `pid`, `direct_url`, `direct_reachable`, `proxy_url`, `proxy_reachable`; the `proxy` object contains `running`, `pid`, `ports`, `https`, `healthy` ([test](tests/controls_status_l2_test.go))
+- Given multiple worktrees exist, when `portree status --all` runs, then output covers every non-bare worktree using the per-worktree shape ([test](tests/controls_status_l2_test.go))
+- Given the proxy is running, when the TUI dashboard renders its service table, then each row includes the proxy URL (`http://{slug}.localhost:{proxy_port}`) and a reachability indicator alongside port and status ([test](../../internal/tui/app_test.go))
+- Given the proxy is stopped, when the user presses `p` in the TUI, then the proxy starts via the same helper used by `up --ensure-proxy`; given it is running, pressing `p` stops it via the same helper used by `down --release-proxy` ([test](../../internal/tui/app_test.go))
+- Given a service is already running, when the user starts it from the TUI, then the action result surfaces "already running (PID N)" rather than "Started X" — mirroring `portree up`'s idempotency ([test](../../internal/tui/app_test.go))
 
 ### Compliance
 
