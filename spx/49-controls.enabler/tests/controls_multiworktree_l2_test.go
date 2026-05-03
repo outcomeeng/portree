@@ -2,6 +2,9 @@ package controls_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -168,6 +171,221 @@ func initBareRepo(t *testing.T) string {
 		}
 	}
 	return dir
+}
+
+// TestResetKillsOrphanProcessesOnCurrentWorktreePorts verifies that the
+// `portree reset` command terminates any process listening on the ports
+// allocated to the current worktree's services. The deterministic FNV-hash
+// allocator means each branch:service has a stable port, so an orphan from
+// a previous run can be hunted down by port without knowing its PID.
+func TestResetKillsOrphanProcessesOnCurrentWorktreePorts(t *testing.T) {
+	mainDir := setupTestRepo(t)
+
+	// First, run portree up to determine which port the allocator hands out
+	// for main:web. Then stop it and grab that port for the orphan test.
+	if _, stderr, code := runPortree(t, mainDir, "up"); code != 0 {
+		t.Fatalf("up: %d, %s", code, stderr)
+	}
+	stdout, _, _ := runPortree(t, mainDir, "ls", "--json")
+	var entries []map[string]interface{}
+	_ = json.Unmarshal([]byte(stdout), &entries)
+	allocatedPort := 0
+	for _, e := range entries {
+		if pf, ok := e["port"].(float64); ok && pf > 0 {
+			allocatedPort = int(pf)
+			break
+		}
+	}
+	if allocatedPort == 0 {
+		t.Fatalf("could not determine allocated port; ls:\n%s", stdout)
+	}
+	if _, stderr, code := runPortree(t, mainDir, "down"); code != 0 {
+		t.Fatalf("down: %d, %s", code, stderr)
+	}
+
+	// Spawn an orphan process bound to that port — simulates the leftover
+	// `next dev` (or any dev server) that survived an earlier crash. python3
+	// is portable across macOS and CI Linux; the script exits if anything
+	// signals it.
+	pyScript := fmt.Sprintf(
+		"import socket, time, sys\n"+
+			"s = socket.socket()\n"+
+			"s.bind(('127.0.0.1', %d))\n"+
+			"s.listen(1)\n"+
+			"sys.stdout.write('bound\\n'); sys.stdout.flush()\n"+
+			"time.sleep(120)\n",
+		allocatedPort)
+	orphan := exec.Command("python3", "-c", pyScript)
+	orphan.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdoutPipe, _ := orphan.StdoutPipe()
+	if err := orphan.Start(); err != nil {
+		t.Skipf("could not start python3 orphan: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-orphan.Process.Pid, syscall.SIGKILL)
+		_ = orphan.Wait()
+	})
+	// Wait for the script to print "bound" before continuing.
+	buf := make([]byte, 32)
+	_ = orphan.Process // keep linter quiet
+	readDone := make(chan struct{})
+	go func() {
+		_, _ = stdoutPipe.Read(buf)
+		close(readDone)
+	}()
+	select {
+	case <-readDone:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("orphan never reported bound on port %d", allocatedPort)
+	}
+
+	// portree reset must hunt down and kill the orphan on this worktree's port.
+	if _, stderr, code := runPortree(t, mainDir, "reset"); code != 0 {
+		t.Fatalf("reset: %d, %s", code, stderr)
+	}
+
+	// The port must now be available for binding.
+	deadline := time.Now().Add(2 * time.Second)
+	freed := false
+	for time.Now().Before(deadline) {
+		ln, err := net.Listen("tcp", "127.0.0.1:"+intToStr(allocatedPort))
+		if err == nil {
+			_ = ln.Close()
+			freed = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !freed {
+		t.Errorf("port %d still held after `portree reset`", allocatedPort)
+	}
+}
+
+func intToStr(i int) string {
+	return fmt.Sprintf("%d", i)
+}
+
+// TestPortreeIgnoresConfigInLinkedWorktree verifies that a `.portree.toml`
+// committed (or otherwise present) in a linked worktree's checkout is ignored
+// — only the main worktree's config is authoritative. Per ADR-15, config and
+// state both resolve from MainWorktreeRoot, so per-worktree `.portree.toml`
+// files would silently fragment the model if honored.
+func TestPortreeIgnoresConfigInLinkedWorktree(t *testing.T) {
+	mainDir := setupTestRepo(t)
+	commitConfig(t, mainDir)
+
+	linkedDir := filepath.Join(t.TempDir(), "feature-worktree")
+	addWorktree(t, mainDir, linkedDir, "feature")
+
+	// Plant a different .portree.toml in the linked worktree's checkout.
+	// Different service name than main's — if it's loaded, ls will show it.
+	rogueConfig := `[services.rogue]
+command = "sleep 100"
+port_range = { min = 18000, max = 18099 }
+proxy_port = 18000
+`
+	rogueConfigPath := filepath.Join(linkedDir, ".portree.toml")
+	if err := os.WriteFile(rogueConfigPath, []byte(rogueConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runPortree(t, linkedDir, "ls", "--json")
+	if code != 0 {
+		t.Fatalf("ls from linked exited %d; stderr:\n%s", code, stderr)
+	}
+
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		t.Fatalf("ls --json: %v\n%s", err, stdout)
+	}
+
+	for _, e := range entries {
+		if s, _ := e["service"].(string); s == "rogue" {
+			t.Errorf("ls showed service %q from the linked worktree's .portree.toml; main's config must win", s)
+		}
+	}
+	foundMainService := false
+	for _, e := range entries {
+		if s, _ := e["service"].(string); s == "web" {
+			foundMainService = true
+			break
+		}
+	}
+	if !foundMainService {
+		t.Errorf("ls did not show 'web' from main's config; entries:\n%s", stdout)
+	}
+}
+
+// TestLsShowsProxyURLAndReachability verifies that `portree ls` surfaces the
+// proxy URL (http://{slug}.localhost:{proxy_port}) when the proxy is running
+// and probes its reachability. Without the URL in the output, ls is unhelpful
+// for users who route traffic through the shared proxy.
+func TestLsShowsProxyURLAndReachability(t *testing.T) {
+	mainDir := setupTestRepo(t)
+
+	// Start a service so a port is allocated and recorded.
+	if _, stderr, code := runPortree(t, mainDir, "up"); code != 0 {
+		t.Fatalf("up exited %d; stderr:\n%s", code, stderr)
+	}
+	t.Cleanup(func() { runPortree(t, mainDir, "down") })
+
+	// Stand up an HTTP server on the configured proxy_port (19000) responding
+	// 200 to HEAD. We then mark the proxy as running in state.json so ls's
+	// URL-rendering path is triggered, and the probe sees a real listener.
+	listener, err := net.Listen("tcp", "127.0.0.1:19000")
+	if err != nil {
+		t.Skipf("could not bind 127.0.0.1:19000 (left over from another test?): %v", err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = srv.Serve(listener) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	statePath := filepath.Join(mainDir, ".portree", "state.json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var st map[string]interface{}
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	st["proxy"] = map[string]interface{}{
+		"pid":    os.Getpid(),
+		"status": "running",
+	}
+	out, _ := json.MarshalIndent(st, "", "  ")
+	if err := os.WriteFile(statePath, out, 0600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	// JSON output must include url and reachable=true.
+	stdout, _, _ := runPortree(t, mainDir, "ls", "--json")
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		t.Fatalf("ls --json: %v\n%s", err, stdout)
+	}
+	foundReachable := false
+	for _, e := range entries {
+		url, _ := e["url"].(string)
+		reachable, _ := e["reachable"].(bool)
+		if strings.Contains(url, ".localhost:19000") && reachable {
+			foundReachable = true
+		}
+	}
+	if !foundReachable {
+		t.Errorf("ls --json should surface a reachable URL on .localhost:19000; got:\n%s", stdout)
+	}
+
+	// Human-readable table must include the URL.
+	tableStdout, _, _ := runPortree(t, mainDir, "ls")
+	if !strings.Contains(tableStdout, ".localhost:19000") {
+		t.Errorf("ls table should include URL on .localhost:19000; got:\n%s", tableStdout)
+	}
+	if !strings.Contains(tableStdout, "URL") {
+		t.Errorf("ls table should include a URL column header when proxy is running; got:\n%s", tableStdout)
+	}
 }
 
 // TestUpWithoutAllAffectsOnlyCallingWorktree verifies the canonical multi-

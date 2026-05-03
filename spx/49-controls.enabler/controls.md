@@ -1,6 +1,6 @@
 # Controls
 
-PROVIDES CLI commands (`up`, `down`, `ls`, `open`, `proxy`, `doctor`, `init`, `dash`) and TUI dashboard
+PROVIDES CLI commands (`up`, `down`, `ls`, `open`, `proxy`, `doctor`, `init`, `reset`, `dash`) and TUI dashboard
 SO THAT developers
 CAN manage portree services from the terminal and discover service endpoints programmatically
 
@@ -21,6 +21,9 @@ CAN manage portree services from the terminal and discover service endpoints pro
 - Given stale state entries (status running, recorded PID no longer alive), when `portree down --prune` runs, then those entries are marked stopped without disturbing any actually-running services ([test](tests/controls_multiworktree_l2_test.go))
 - Given stale state entries detected by `portree doctor`, when the diagnostic output is rendered, then the stale-state row names `portree down --prune` as the command that clears the entries ([test](tests/controls_multiworktree_l2_test.go))
 - Given running services across all worktrees and orphaned state entries, when `portree down --all --prune` runs from any worktree, then every worktree's services stop and orphaned entries are removed in a single invocation ([test](tests/controls_multiworktree_l2_test.go))
+- Given the proxy is running and reachable, when `portree ls` is run, then each entry surfaces its proxy URL (`http://{slug}.localhost:{proxy_port}`) before the port column with a reachability indicator ([test](tests/controls_multiworktree_l2_test.go))
+- Given a process holds a port allocated to one of the current worktree's services, when `portree reset` runs, then that process is terminated and the port is freed ([test](tests/controls_multiworktree_l2_test.go))
+- Given a `.portree.toml` exists in a linked worktree's checkout, when any portree command runs from that worktree, then the file is ignored and the main worktree's config is used ([test](tests/controls_multiworktree_l2_test.go))
 
 ### Compliance
 

@@ -31,7 +31,7 @@ var downCmd = &cobra.Command{
 			return fmt.Errorf("getting current directory: %w", err)
 		}
 
-		stateDir := filepath.Join(stateRoot, ".portree")
+		stateDir := filepath.Join(commonRoot, ".portree")
 		store, err := state.NewFileStore(stateDir)
 		if err != nil {
 			return fmt.Errorf("creating state store: %w", err)
