@@ -13,6 +13,7 @@ CAN manage portree services from the terminal and discover service endpoints pro
 - Given a `.portree.toml` with a validation error, when `portree doctor` is run, then each configuration error is reported with the field name and reason ([test](tests/controls_scenario_l2_test.go))
 - Given a valid `.portree.toml` and all services reachable, when `portree doctor` is run, then the command exits with status 0 ([test](tests/controls_scenario_l2_test.go))
 - Given no `.portree.toml` in the repo, when any command requiring config is run, then the error message instructs the user to run `portree init` ([test](tests/controls_scenario_l2_test.go))
+- Given multiple worktrees exist, when `portree up` runs (without `--all`) from any worktree, then only that worktree's services start; services in other worktrees are untouched ([test](tests/controls_multiworktree_l2_test.go))
 - Given multiple worktrees exist, when `portree up --all` runs from any worktree, then services start for every non-bare worktree ([test](tests/controls_flags_l2_test.go))
 - Given services are already running for a worktree, when `portree up` runs again from any worktree, then those services are not respawned, the original PIDs remain in state, and the existing processes are untouched ([test](tests/controls_multiworktree_l2_test.go))
 - Given a configured service name, when `portree up --service <name>` runs, then only that service starts ([test](tests/controls_flags_l2_test.go))

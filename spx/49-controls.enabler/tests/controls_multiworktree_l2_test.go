@@ -170,6 +170,75 @@ func initBareRepo(t *testing.T) string {
 	return dir
 }
 
+// TestUpWithoutAllAffectsOnlyCallingWorktree verifies the canonical multi-
+// developer workflow: each developer runs `portree up` from their own worktree
+// and only that worktree's services start. Another developer running `portree
+// up` from a different worktree must not start, stop, or otherwise touch the
+// first worktree's services.
+//
+// This is the default portree workflow. `--all` is the exception, not the rule.
+func TestUpWithoutAllAffectsOnlyCallingWorktree(t *testing.T) {
+	mainDir := setupTestRepo(t)
+	commitConfig(t, mainDir)
+
+	linkedDir := filepath.Join(t.TempDir(), "feature-worktree")
+	addWorktree(t, mainDir, linkedDir, "feature")
+
+	// Developer A: `portree up` from mainDir. Only main's service should start.
+	if _, stderr, code := runPortree(t, mainDir, "up"); code != 0 {
+		t.Fatalf("up from main exited %d; stderr:\n%s", code, stderr)
+	}
+	t.Cleanup(func() { runPortree(t, mainDir, "down", "--all") })
+
+	stdout, _, _ := runPortree(t, mainDir, "ls", "--json")
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		t.Fatalf("ls --json: %v\n%s", err, stdout)
+	}
+	running := map[string]int{}
+	for _, e := range entries {
+		if s, _ := e["status"].(string); s != "running" {
+			continue
+		}
+		wt, _ := e["worktree"].(string)
+		if pidF, ok := e["pid"].(float64); ok && pidF > 0 {
+			running[wt] = int(pidF)
+		}
+	}
+	if len(running) != 1 {
+		t.Fatalf("up from main should start exactly 1 worktree's services; got %d running:\n%s", len(running), stdout)
+	}
+	var mainPID int
+	for _, pid := range running {
+		mainPID = pid
+	}
+
+	// Developer B: `portree up` from linkedDir. Only feature's service should
+	// start. Main's PID must remain untouched.
+	if _, stderr, code := runPortree(t, linkedDir, "up"); code != 0 {
+		t.Fatalf("up from linked exited %d; stderr:\n%s", code, stderr)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if err := syscall.Kill(mainPID, 0); err != nil {
+		t.Errorf("main worktree's PID %d was killed by `portree up` from a different worktree: %v", mainPID, err)
+	}
+
+	stdout, _, _ = runPortree(t, mainDir, "ls", "--json")
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		t.Fatalf("ls --json: %v\n%s", err, stdout)
+	}
+	runningCount := 0
+	for _, e := range entries {
+		if s, _ := e["status"].(string); s == "running" {
+			runningCount++
+		}
+	}
+	if runningCount != 2 {
+		t.Errorf("after each developer ran their own `up`, expected 2 running services; got %d:\n%s", runningCount, stdout)
+	}
+}
+
 // TestSecondUpFromAnotherWorktreeIsIdempotent verifies the canonical multi-
 // developer scenario: two `portree up --all` invocations from different
 // worktrees against the same shared state must NOT kill or overwrite the
