@@ -56,6 +56,7 @@ Every command's state I/O and config loading construct paths through `git.MainWo
 - Every command loads config from `filepath.Join(git.MainWorktreeRoot(cwd), ".portree.toml")` ([test](49-controls.enabler/tests/controls_multiworktree_l2_test.go))
 - `portree down --all --prune` runs the stop loop for every non-bare worktree before pruning orphaned state entries ([test](49-controls.enabler/tests/controls_multiworktree_l2_test.go))
 - Service processes start with `Setpgid: true` and stop via `Kill(-pgid, SIGTERM)` followed by `Kill(-pgid, SIGKILL)` after the configured timeout ([test](35-service-management.enabler/tests/lifecycle_compliance_l2_test.go))
+- `portree up` is idempotent: a service whose state record holds a live PID is not respawned, and its PID remains in state ([test](49-controls.enabler/tests/controls_multiworktree_l2_test.go))
 
 ### NEVER
 

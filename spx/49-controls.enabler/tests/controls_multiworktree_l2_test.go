@@ -170,6 +170,91 @@ func initBareRepo(t *testing.T) string {
 	return dir
 }
 
+// TestSecondUpFromAnotherWorktreeIsIdempotent verifies the canonical multi-
+// developer scenario: two `portree up --all` invocations from different
+// worktrees against the same shared state must NOT kill or overwrite the
+// services started by the first invocation. The second invocation is a no-op
+// for already-running services.
+//
+// This is THE basic scenario portree was built for. The original PIDs must
+// survive, and `portree ls` must continue to show them.
+func TestSecondUpFromAnotherWorktreeIsIdempotent(t *testing.T) {
+	mainDir := setupTestRepo(t)
+	commitConfig(t, mainDir)
+
+	linkedDir := filepath.Join(t.TempDir(), "feature-worktree")
+	addWorktree(t, mainDir, linkedDir, "feature")
+
+	// First up: from mainDir, start services for both worktrees.
+	if _, stderr, code := runPortree(t, mainDir, "up", "--all"); code != 0 {
+		t.Fatalf("first portree up --all exited %d; stderr:\n%s", code, stderr)
+	}
+	t.Cleanup(func() { runPortree(t, mainDir, "down", "--all") })
+
+	// Capture original PIDs.
+	stdout, _, _ := runPortree(t, mainDir, "ls", "--json")
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		t.Fatalf("ls --json: %v\n%s", err, stdout)
+	}
+	originalPIDs := map[string]int{}
+	for _, e := range entries {
+		if status, _ := e["status"].(string); status != "running" {
+			continue
+		}
+		wt, _ := e["worktree"].(string)
+		if pidF, ok := e["pid"].(float64); ok && pidF > 0 {
+			originalPIDs[wt] = int(pidF)
+		}
+	}
+	if len(originalPIDs) < 2 {
+		t.Fatalf("expected 2 running services after first up; got %d (entries: %s)", len(originalPIDs), stdout)
+	}
+
+	// Second up from a DIFFERENT worktree. Must be idempotent — original PIDs
+	// must remain untouched.
+	if _, stderr, code := runPortree(t, linkedDir, "up", "--all"); code != 0 {
+		t.Fatalf("second portree up --all exited %d; stderr:\n%s", code, stderr)
+	}
+
+	// Brief settling window — the bug manifests immediately when the new
+	// wrapper exits, not seconds later.
+	time.Sleep(500 * time.Millisecond)
+
+	// Original PIDs must still be signalable (alive).
+	for wt, pid := range originalPIDs {
+		if err := syscall.Kill(pid, 0); err != nil {
+			t.Errorf("original %q PID %d was killed by the second `up --all`: %v", wt, pid, err)
+		}
+	}
+
+	// State must still reflect the original PIDs (not be overwritten with
+	// new wrapper PIDs that have since died).
+	stdout2, _, _ := runPortree(t, mainDir, "ls", "--json")
+	var entries2 []map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout2), &entries2); err != nil {
+		t.Fatalf("ls --json: %v\n%s", err, stdout2)
+	}
+	runningInState := 0
+	for _, e := range entries2 {
+		status, _ := e["status"].(string)
+		if status != "running" {
+			continue
+		}
+		runningInState++
+		wt, _ := e["worktree"].(string)
+		pidF, _ := e["pid"].(float64)
+		if originalPIDs[wt] != 0 && int(pidF) != originalPIDs[wt] {
+			t.Errorf("state for %q now shows PID %d; original (still alive) was %d — second `up` overwrote state",
+				wt, int(pidF), originalPIDs[wt])
+		}
+	}
+	if runningInState < len(originalPIDs) {
+		t.Errorf("after second up, expected %d running services in state; got %d\nls output:\n%s",
+			len(originalPIDs), runningInState, stdout2)
+	}
+}
+
 // TestDownPruneReapsStaleEntries verifies that `portree down --prune` clears
 // state entries whose recorded PID is no longer alive. It must do so without
 // touching any actually-running services (no SIGTERM to live processes).
