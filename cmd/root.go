@@ -57,7 +57,7 @@ var rootCmd = &cobra.Command{
 		logging.Verbose("repo root: %s", repoRoot)
 		logging.Verbose("state root: %s", stateRoot)
 
-		cfg, err = config.Load(repoRoot)
+		cfg, err = config.Load(stateRoot)
 		if err != nil {
 			return fmt.Errorf("loading config: %w", err)
 		}

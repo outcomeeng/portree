@@ -84,6 +84,29 @@ func captureBranchPIDs(t *testing.T, mainDir, branch string) {
 	})
 }
 
+// TestConfigLoadsFromMainWorktreeWhenLinkedHasNone verifies that portree
+// commands invoked from a linked worktree that has no .portree.toml load the
+// config from the main worktree. Real-world checkout layouts rarely commit
+// .portree.toml to feature branches, so the linked worktree typically has no
+// copy of the config.
+func TestConfigLoadsFromMainWorktreeWhenLinkedHasNone(t *testing.T) {
+	mainDir := setupTestRepo(t)
+	// Note: do NOT commit .portree.toml — main has it, linked branches do not.
+
+	linkedDir := filepath.Join(t.TempDir(), "feature-worktree")
+	addWorktree(t, mainDir, linkedDir, "feature")
+
+	// Confirm the linked worktree has no .portree.toml, mirroring the user's setup.
+	if _, err := os.Stat(filepath.Join(linkedDir, ".portree.toml")); err == nil {
+		t.Fatalf(".portree.toml should not exist in linked worktree %q for this scenario", linkedDir)
+	}
+
+	stdout, stderr, code := runPortree(t, linkedDir, "ls")
+	if code != 0 {
+		t.Errorf("portree ls from linked worktree (no local .portree.toml) exited %d; should load config from main worktree.\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+}
+
 // TestStateFileIsInMainWorktreeRoot verifies that portree commands invoked from
 // a linked worktree write state to the main worktree's .portree/state.json,
 // not the linked worktree's. The shared root must resolve via
