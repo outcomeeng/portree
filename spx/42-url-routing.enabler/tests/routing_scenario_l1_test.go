@@ -22,9 +22,21 @@ import (
 	"github.com/fairy-pitta/portree/internal/state"
 )
 
-const testProxyPort = 19800
+// freePort asks the OS for an unused TCP port by binding `:0`, reading back the
+// assigned port, and immediately closing the listener. Used so parallel test
+// runs can each get a distinct port without colliding on hardcoded constants.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("freePort: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port
+}
 
-func setupProxy(t *testing.T, backendPort int) (*proxy.ProxyServer, *state.FileStore) {
+func setupProxy(t *testing.T, backendPort, proxyPort int) (*proxy.ProxyServer, *state.FileStore) {
 	t.Helper()
 	store, err := state.NewFileStore(t.TempDir())
 	if err != nil {
@@ -35,7 +47,7 @@ func setupProxy(t *testing.T, backendPort int) (*proxy.ProxyServer, *state.FileS
 			"web": {
 				Command:   "npm start",
 				PortRange: config.PortRange{Min: 3100, Max: 3199},
-				ProxyPort: testProxyPort,
+				ProxyPort: proxyPort,
 			},
 		},
 		Env:       map[string]string{},
@@ -65,15 +77,16 @@ func TestProxyForwardsRequestToUpstream(t *testing.T) {
 	var backendPort int
 	_, _ = fmt.Sscanf(upstream.Listener.Addr().String(), "127.0.0.1:%d", &backendPort)
 
-	srv, _ := setupProxy(t, backendPort)
-	if err := srv.Start(map[string]int{"web": testProxyPort}); err != nil {
+	proxyPort := freePort(t)
+	srv, _ := setupProxy(t, backendPort, proxyPort)
+	if err := srv.Start(map[string]int{"web": proxyPort}); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 	defer func() { _ = srv.Stop() }()
 	time.Sleep(20 * time.Millisecond)
 
-	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", testProxyPort), nil)
-	req.Host = fmt.Sprintf("main.localhost:%d", testProxyPort)
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", proxyPort), nil)
+	req.Host = fmt.Sprintf("main.localhost:%d", proxyPort)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -131,7 +144,7 @@ func generateTestCert(t *testing.T) (tls.Certificate, *x509.Certificate) {
 // TestHTTPSProxyEstablishesWithoutTLSError verifies that an HTTPS proxy with a
 // trusted TLS certificate accepts connections without a TLS error.
 func TestHTTPSProxyEstablishesWithoutTLSError(t *testing.T) {
-	const httpsProxyPort = 19803
+	httpsProxyPort := freePort(t)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -198,8 +211,9 @@ func TestHTTPSProxyEstablishesWithoutTLSError(t *testing.T) {
 
 // TestProxyStopsWithinShutdownTimeout verifies that Stop() completes within 5 seconds.
 func TestProxyStopsWithinShutdownTimeout(t *testing.T) {
-	srv, _ := setupProxy(t, 1) // upstream port 1 — listener binds but routing fails; enough for shutdown test
-	if err := srv.Start(map[string]int{"web": 19801}); err != nil {
+	proxyPort := freePort(t)
+	srv, _ := setupProxy(t, 1, proxyPort) // upstream port 1 — listener binds but routing fails; enough for shutdown test
+	if err := srv.Start(map[string]int{"web": proxyPort}); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)

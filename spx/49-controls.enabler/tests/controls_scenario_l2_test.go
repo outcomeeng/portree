@@ -19,6 +19,8 @@ var (
 	buildErr   error
 )
 
+var binaryDir string
+
 func TestMain(m *testing.M) {
 	buildOnce.Do(func() {
 		dir, err := findProjectRoot()
@@ -26,7 +28,14 @@ func TestMain(m *testing.M) {
 			buildErr = fmt.Errorf("finding project root: %w", err)
 			return
 		}
-		bin := filepath.Join(os.TempDir(), "portree-test")
+		// MkdirTemp gives a unique directory per test process — two parallel
+		// `go test` runs won't collide on the same binary path.
+		tmp, err := os.MkdirTemp("", "portree-test-*")
+		if err != nil {
+			buildErr = fmt.Errorf("creating temp dir: %w", err)
+			return
+		}
+		bin := filepath.Join(tmp, "portree")
 		if runtime.GOOS == "windows" {
 			bin += ".exe"
 		}
@@ -34,13 +43,15 @@ func TestMain(m *testing.M) {
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			buildErr = fmt.Errorf("building binary: %w\n%s", err, out)
+			_ = os.RemoveAll(tmp)
 			return
 		}
 		binaryPath = bin
+		binaryDir = tmp
 	})
 	code := m.Run()
-	if binaryPath != "" {
-		_ = os.Remove(binaryPath)
+	if binaryDir != "" {
+		_ = os.RemoveAll(binaryDir)
 	}
 	os.Exit(code)
 }

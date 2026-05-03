@@ -41,8 +41,9 @@ CONTRIBUTING TO faster iteration cycles on the Outcome Engineering platform (spx
 
 ### Compliance
 
-- ALWAYS: CLI commands exit with non-zero status on error — required for agent and script compatibility ([review])
-- NEVER: portree modifies `/etc/hosts` or requires elevated privileges for core functionality — developer ergonomics ([review])
+- ALWAYS: CLI commands exit with non-zero status on error — required for agent and script compatibility ([test](49-controls.enabler/tests/controls_compliance_l2_test.go))
+- NEVER: portree modifies `/etc/hosts` — portree relies on RFC 6761 `*.localhost` resolution (per ADR-003), which avoids elevated privileges and persistent system state ([test](42-url-routing.enabler/tests/no_etc_hosts_compliance_l1_test.go))
+- NEVER: portree requires elevated privileges for core functionality — developer ergonomics; the only privileged operation is `portree trust` for HTTPS CA installation, which is opt-in and explicitly documented ([review])
 
 ## Open decisions
 

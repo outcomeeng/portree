@@ -44,6 +44,8 @@ func TestWriteTimeoutIsNotSet(t *testing.T) {
 	var backendPort int
 	_, _ = fmt.Sscanf(upstream.Listener.Addr().String(), "127.0.0.1:%d", &backendPort)
 
+	proxyPort := freePort(t)
+
 	store, err := state.NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +55,7 @@ func TestWriteTimeoutIsNotSet(t *testing.T) {
 			"web": {
 				Command:   "npm start",
 				PortRange: config.PortRange{Min: 3100, Max: 3199},
-				ProxyPort: 19802,
+				ProxyPort: proxyPort,
 			},
 		},
 		Env:       map[string]string{},
@@ -70,14 +72,14 @@ func TestWriteTimeoutIsNotSet(t *testing.T) {
 
 	resolver := proxy.NewResolver(cfg, store)
 	srv := proxy.NewProxyServer(resolver, nil)
-	if err := srv.Start(map[string]int{"web": 19802}); err != nil {
+	if err := srv.Start(map[string]int{"web": proxyPort}); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 	defer func() { _ = srv.Stop() }()
 	time.Sleep(20 * time.Millisecond)
 
-	req, _ := http.NewRequest("GET", "http://127.0.0.1:19802/", nil)
-	req.Host = "main.localhost:19802"
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", proxyPort), nil)
+	req.Host = fmt.Sprintf("main.localhost:%d", proxyPort)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("streaming request error: %v", err)

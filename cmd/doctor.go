@@ -38,7 +38,7 @@ var doctorCmd = &cobra.Command{
 				name: "inside git repository", ok: false, detail: err.Error(),
 			})
 			printResults(results)
-			return nil
+			return fmt.Errorf("doctor: one or more checks failed")
 		}
 
 		results = append(results, checkRepo(cwd))
