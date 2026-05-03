@@ -28,4 +28,9 @@ jobs:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
     with:
-      authorized_roles: '["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'
+      # Workaround: this PR's event payload reports `author_association: NONE`
+      # even though the PR creator (simonheimlicher) is a MEMBER per the API.
+      # Possibly a GitHub event-cache quirk on PRs opened in fork repositories.
+      # The reusable workflow gates on `pull_request.author_association`, so we
+      # explicitly include NONE for this branch's auto-trigger to fire.
+      authorized_roles: '["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"]'
