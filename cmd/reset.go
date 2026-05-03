@@ -19,7 +19,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var resetAll bool
+var (
+	resetAll       bool
+	resetProxyPort bool
+)
 
 var resetCmd = &cobra.Command{
 	Use:   "reset",
@@ -103,6 +106,48 @@ After reset, the affected services are marked stopped in state. The next
 			}
 		}
 
+		if resetProxyPort {
+			// Read the legitimate proxy PID once so we don't kill our own proxy.
+			var legitimateProxyPID int
+			if err := store.WithLock(func() error {
+				st, e := store.Load()
+				if e != nil {
+					return e
+				}
+				if st.Proxy.Status == state.StatusRunning && st.Proxy.PID > 0 && process.IsProcessRunning(st.Proxy.PID) {
+					legitimateProxyPID = st.Proxy.PID
+				}
+				return nil
+			}); err != nil {
+				logging.Warn("failed to read proxy state: %v", err)
+			}
+
+			// Dedupe proxy_port values across services — many configs share one.
+			proxyPorts := map[int]bool{}
+			for _, svc := range cfg.Services {
+				if svc.ProxyPort > 0 {
+					proxyPorts[svc.ProxyPort] = true
+				}
+			}
+			ports := make([]int, 0, len(proxyPorts))
+			for p := range proxyPorts {
+				ports = append(ports, p)
+			}
+			sort.Ints(ports)
+
+			for _, p := range ports {
+				for _, pid := range pidsListeningOn(p) {
+					if pid == legitimateProxyPID {
+						logging.Verbose("Skipping legitimate proxy PID %d on port %d", pid, p)
+						continue
+					}
+					logging.Info("Killing PID %d holding proxy port %d", pid, p)
+					terminatePID(pid)
+					killed++
+				}
+			}
+		}
+
 		if killed == 0 {
 			logging.Info("No processes were holding allocated ports.")
 		} else {
@@ -163,5 +208,6 @@ func terminatePID(pid int) {
 
 func init() {
 	resetCmd.Flags().BoolVar(&resetAll, "all", false, "Reset every worktree's allocated ports")
+	resetCmd.Flags().BoolVar(&resetProxyPort, "proxy-port", false, "Also kill non-portree listeners on the configured proxy port(s)")
 	rootCmd.AddCommand(resetCmd)
 }

@@ -173,6 +173,151 @@ func initBareRepo(t *testing.T) string {
 	return dir
 }
 
+// spawnPortOrphan starts a python3 process that binds the given TCP port on
+// 127.0.0.1, holds it for 120s, and prints "bound" to stdout once the bind
+// succeeds. The test waits up to 3s for that confirmation. Cleanup kills the
+// orphan's process group via t.Cleanup.
+func spawnPortOrphan(t *testing.T, port int) {
+	t.Helper()
+	pyScript := fmt.Sprintf(
+		"import socket, time, sys\n"+
+			"s = socket.socket()\n"+
+			"s.bind(('127.0.0.1', %d))\n"+
+			"s.listen(1)\n"+
+			"sys.stdout.write('bound\\n'); sys.stdout.flush()\n"+
+			"time.sleep(120)\n",
+		port)
+	orphan := exec.Command("python3", "-c", pyScript)
+	orphan.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdoutPipe, _ := orphan.StdoutPipe()
+	if err := orphan.Start(); err != nil {
+		t.Skipf("could not start python3 orphan: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-orphan.Process.Pid, syscall.SIGKILL)
+		_ = orphan.Wait()
+	})
+	buf := make([]byte, 32)
+	readDone := make(chan struct{})
+	go func() {
+		_, _ = stdoutPipe.Read(buf)
+		close(readDone)
+	}()
+	select {
+	case <-readDone:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("orphan never reported bound on port %d", port)
+	}
+}
+
+// waitForPortFree polls until the given TCP port is available for binding.
+func waitForPortFree(t *testing.T, port int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			_ = ln.Close()
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// TestResetProxyPortKillsOrphanOnProxyPort verifies that `portree reset
+// --proxy-port` terminates a non-portree listener on the configured proxy
+// port. Mirrors the v0.4.0 dev:kill-replacement use case: a stray Next.js (or
+// other dev server) bound to 3000 needs to be cleaned up.
+func TestResetProxyPortKillsOrphanOnProxyPort(t *testing.T) {
+	mainDir := setupTestRepo(t)
+	const proxyPort = 19000 // matches test config's proxy_port
+
+	spawnPortOrphan(t, proxyPort)
+
+	if _, stderr, code := runPortree(t, mainDir, "reset", "--proxy-port"); code != 0 {
+		t.Fatalf("reset --proxy-port: %d, %s", code, stderr)
+	}
+
+	if !waitForPortFree(t, proxyPort, 2*time.Second) {
+		t.Errorf("port %d still held after `reset --proxy-port`", proxyPort)
+	}
+}
+
+// TestResetProxyPortLeavesLegitimateProxyAlone verifies that --proxy-port
+// skips the PID recorded as the running portree proxy in state.
+func TestResetProxyPortLeavesLegitimateProxyAlone(t *testing.T) {
+	mainDir := setupTestRepo(t)
+
+	if _, stderr, code := runPortree(t, mainDir, "up", "--ensure-proxy"); code != 0 {
+		t.Fatalf("up --ensure-proxy: %d, %s", code, stderr)
+	}
+	t.Cleanup(func() {
+		runPortree(t, mainDir, "proxy", "stop")
+		runPortree(t, mainDir, "down", "--all")
+	})
+
+	proxyPID, ok := waitForProxyStatus(t, mainDir, "running", 3*time.Second)
+	if !ok {
+		t.Fatal("legitimate proxy did not start")
+	}
+
+	if _, stderr, code := runPortree(t, mainDir, "reset", "--proxy-port"); code != 0 {
+		t.Fatalf("reset --proxy-port: %d, %s", code, stderr)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	if err := syscall.Kill(proxyPID, 0); err != nil {
+		t.Errorf("legitimate proxy PID %d killed by `reset --proxy-port`: %v", proxyPID, err)
+	}
+	if status, _ := readProxyState(t, mainDir); status != "running" {
+		t.Errorf("proxy state changed to %q after `reset --proxy-port`; must remain running", status)
+	}
+}
+
+// TestResetProxyPortComposesWithAll verifies that `reset --all --proxy-port`
+// cleans both per-worktree service ports AND configured proxy ports in one
+// invocation.
+func TestResetProxyPortComposesWithAll(t *testing.T) {
+	mainDir := setupTestRepo(t)
+	const proxyPort = 19000
+
+	// Determine an allocated service port via an up/down round-trip.
+	if _, stderr, code := runPortree(t, mainDir, "up"); code != 0 {
+		t.Fatalf("up: %d, %s", code, stderr)
+	}
+	stdout, _, _ := runPortree(t, mainDir, "ls", "--json")
+	var entries []map[string]interface{}
+	_ = json.Unmarshal([]byte(stdout), &entries)
+	servicePort := 0
+	for _, e := range entries {
+		if pf, ok := e["port"].(float64); ok && pf > 0 {
+			servicePort = int(pf)
+			break
+		}
+	}
+	if servicePort == 0 {
+		t.Fatalf("could not determine service port; ls:\n%s", stdout)
+	}
+	if _, stderr, code := runPortree(t, mainDir, "down"); code != 0 {
+		t.Fatalf("down: %d, %s", code, stderr)
+	}
+
+	// Two orphans: one on a service port, one on the proxy port.
+	spawnPortOrphan(t, servicePort)
+	spawnPortOrphan(t, proxyPort)
+
+	if _, stderr, code := runPortree(t, mainDir, "reset", "--all", "--proxy-port"); code != 0 {
+		t.Fatalf("reset --all --proxy-port: %d, %s", code, stderr)
+	}
+
+	for _, p := range []int{servicePort, proxyPort} {
+		if !waitForPortFree(t, p, 2*time.Second) {
+			t.Errorf("port %d still held after `reset --all --proxy-port`", p)
+		}
+	}
+}
+
 // TestResetKillsOrphanProcessesOnCurrentWorktreePorts verifies that the
 // `portree reset` command terminates any process listening on the ports
 // allocated to the current worktree's services. The deterministic FNV-hash
