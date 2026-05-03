@@ -12,7 +12,7 @@ import (
 var initCmd = &cobra.Command{
 	Use:         "init",
 	Short:       "Initialize a .portree.toml configuration file",
-	Long:        "Creates a default .portree.toml in the current git repository root.",
+	Long:        "Creates a default .portree.toml in the main worktree root, which is the canonical config location for every worktree of the repository.",
 	Annotations: map[string]string{"skipRepoDetection": "true"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cwd, err := os.Getwd()
@@ -20,7 +20,7 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("getting current directory: %w", err)
 		}
 
-		root, err := git.FindRepoRoot(cwd)
+		root, err := git.MainWorktreeRoot(cwd)
 		if err != nil {
 			return fmt.Errorf("not inside a git repository")
 		}

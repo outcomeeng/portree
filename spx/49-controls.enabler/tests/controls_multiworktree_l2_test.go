@@ -84,27 +84,89 @@ func captureBranchPIDs(t *testing.T, mainDir, branch string) {
 	})
 }
 
-// TestConfigLoadsFromMainWorktreeWhenLinkedHasNone verifies that portree
-// commands invoked from a linked worktree that has no .portree.toml load the
-// config from the main worktree. Real-world checkout layouts rarely commit
-// .portree.toml to feature branches, so the linked worktree typically has no
-// copy of the config.
-func TestConfigLoadsFromMainWorktreeWhenLinkedHasNone(t *testing.T) {
+// TestAllCommandsFindMainWorktreeFromLinkedWorktree exercises every portree
+// subcommand that touches state or config from a linked worktree that has no
+// local .portree.toml. Each must succeed (or fail with a non-config-related
+// error) — none may fail with "config not found in <linked-worktree>".
+func TestAllCommandsFindMainWorktreeFromLinkedWorktree(t *testing.T) {
 	mainDir := setupTestRepo(t)
 	// Note: do NOT commit .portree.toml — main has it, linked branches do not.
 
 	linkedDir := filepath.Join(t.TempDir(), "feature-worktree")
 	addWorktree(t, mainDir, linkedDir, "feature")
 
-	// Confirm the linked worktree has no .portree.toml, mirroring the user's setup.
-	if _, err := os.Stat(filepath.Join(linkedDir, ".portree.toml")); err == nil {
-		t.Fatalf(".portree.toml should not exist in linked worktree %q for this scenario", linkedDir)
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"ls", []string{"ls"}},
+		{"ls --json", []string{"ls", "--json"}},
+		{"doctor", []string{"doctor"}},
+		{"down", []string{"down"}},
+		{"down --all", []string{"down", "--all"}},
+		{"down --prune", []string{"down", "--prune"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runPortree(t, linkedDir, tc.args...)
+			combined := stdout + stderr
+			if strings.Contains(combined, "not found in "+linkedDir) {
+				t.Errorf("portree %s looked for config/state in linked worktree %q instead of main worktree %q\nstdout:\n%s\nstderr:\n%s",
+					strings.Join(tc.args, " "), linkedDir, mainDir, stdout, stderr)
+			}
+			if code != 0 {
+				t.Errorf("portree %s from linked worktree exited %d (config/state must resolve via main worktree)\nstdout:\n%s\nstderr:\n%s",
+					strings.Join(tc.args, " "), code, stdout, stderr)
+			}
+		})
+	}
+}
+
+// TestInitFromLinkedWorktreeCreatesConfigInMainWorktree verifies that
+// `portree init` invoked from a linked worktree creates .portree.toml in the
+// main worktree. Anything else makes the file invisible to all other commands.
+func TestInitFromLinkedWorktreeCreatesConfigInMainWorktree(t *testing.T) {
+	mainDir := initBareRepo(t) // empty repo, no .portree.toml anywhere
+
+	linkedDir := filepath.Join(t.TempDir(), "feature-worktree")
+	addWorktree(t, mainDir, linkedDir, "feature")
+
+	if _, stderr, code := runPortree(t, linkedDir, "init"); code != 0 {
+		t.Fatalf("portree init from linked worktree exited %d; stderr:\n%s", code, stderr)
 	}
 
-	stdout, stderr, code := runPortree(t, linkedDir, "ls")
-	if code != 0 {
-		t.Errorf("portree ls from linked worktree (no local .portree.toml) exited %d; should load config from main worktree.\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	mainConfig := filepath.Join(mainDir, ".portree.toml")
+	linkedConfig := filepath.Join(linkedDir, ".portree.toml")
+	if _, err := os.Stat(mainConfig); os.IsNotExist(err) {
+		t.Errorf(".portree.toml not created in main worktree %q", mainConfig)
 	}
+	if _, err := os.Stat(linkedConfig); err == nil {
+		t.Errorf(".portree.toml was created in the linked worktree %q — must live at main worktree root", linkedConfig)
+	}
+}
+
+// initBareRepo creates a temp git repo with one empty commit, no .portree.toml.
+func initBareRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v failed: %v\n%s", args, err, out)
+		}
+	}
+	return dir
 }
 
 // TestStateFileIsInMainWorktreeRoot verifies that portree commands invoked from

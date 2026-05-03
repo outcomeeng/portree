@@ -43,8 +43,10 @@ var doctorCmd = &cobra.Command{
 
 		results = append(results, checkRepo(cwd))
 
-		// Config and state checks require a repo.
-		root, rootErr := git.FindRepoRoot(cwd)
+		// Config and state checks require a repo. Resolve to the main worktree
+		// root so config and state checks find the canonical location regardless
+		// of which worktree invoked doctor.
+		root, rootErr := git.MainWorktreeRoot(cwd)
 		if rootErr == nil {
 			results = append(results, checkConfig(root))
 
