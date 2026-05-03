@@ -12,6 +12,23 @@
 
 ---
 
+## v0.2.x からのアップグレード — 破壊的変更
+
+> [!WARNING]
+> **v0.3.0 以降、同一リポジトリのすべての worktree は 1 つの portree インスタンスを共有します。** 状態ファイル (`.portree/state.json`) と設定ファイル (`.portree.toml`) は、呼び出し元の worktree ではなく **メイン worktree のルート** (`git rev-parse --git-common-dir` で解決) を起点に読み書きされます。これは複数開発者・複数エージェントのワークフローを正しく機能させるためのアーキテクチャ変更ですが、**同一リポジトリの異なる worktree 内で独立した portree インスタンスを並行運用すること** はできなくなりました。
+>
+> 以前のバージョンで worktree ごとの分離に依存していた場合(例: 開発者 A が feature ブランチで自身の portree を、開発者 B が `main` で別の portree を動かすような構成)、その運用は不可能になります。共有状態が新しいモデルです。
+>
+> **移行手順:**
+>
+> - リンク worktree 配下に残っている `.portree/` ディレクトリは削除してください — アップグレード後は無視されます。
+> - feature ブランチにのみ存在しメイン worktree には存在しない `.portree.toml` は黙って無視されます。設定ファイルはメイン worktree でチェックアウトされているブランチ(または `main` に直接コミット)に配置してください。
+> - `portree up` を再実行してください。状態は新しい正準位置に書き込まれます。
+>
+> 詳細は [ADR-15](./spx/15-multi-worktree-state.adr.md) を参照してください。
+
+---
+
 ## デモ
 
 ![portree workflow demo](./demo/demo-workflow.gif)
@@ -22,13 +39,18 @@
 
 - **マルチサービス** — フロントエンド、バックエンド、任意の数のサービスを worktree ごとに定義
 - **ポート自動割り当て** — ハッシュベース (FNV32) のポート割り当て。worktree 間のポート衝突なし
+- **共有マルチ worktree 状態** — メイン worktree ルートに 1 つの正準状態ファイル。すべての worktree(および開発者・エージェント)が同じビューを共有
+- **冪等な `portree up`** — 別の worktree から再度 `up` を実行しても、既に動いているサービスは維持される
+- **プロキシの自動ライフサイクル** — `up --ensure-proxy` でプロキシをバックグラウンド起動。`down --release-proxy` で他に必要な worktree がない場合のみ停止
 - **サブドメインリバースプロキシ** — `branch-name.localhost:<port>` で任意の worktree にアクセス (`/etc/hosts` の編集不要)
 - **HTTPS プロキシ** — 自動生成証明書またはカスタム証明書による HTTPS 対応。Secure Cookie や Service Worker が必要なローカル開発に
+- **到達性インジケーター** — `portree ls` が各プロキシ URL を probe し、上流が応答しているかを表示
 - **環境変数の自動注入** — `$PORT`、`$PT_BRANCH`、`$PT_BACKEND_URL` 等を自動設定
 - **TUI ダッシュボード** — ターミナル上のインタラクティブ UI でサービスの起動・停止・監視
 - **プロセスライフサイクル管理** — グレースフルシャットダウン (SIGTERM → SIGKILL)、ログファイル、古い PID の自動クリーンアップ
+- **孤立ポートのクリーンアップ** — `portree reset` で worktree の割り当てポートを保持しているプロセスを強制終了
 - **worktree ごとのオーバーライド** — ブランチ別にコマンド、ポート、環境変数をカスタマイズ
-- **AI エージェント対応** — `portree ls --json` で URL 情報を含む JSON 出力。エンドポイントの自動発見に対応
+- **AI エージェント対応** — `portree ls --json` で `url`、`direct_url`、`reachable` を含む JSON 出力。エンドポイントの自動発見に対応
 
 ---
 
@@ -82,26 +104,24 @@ proxy_port = 8000
 NODE_ENV = "development"
 ```
 
-### 4. サービス起動
+### 4. サービスとプロキシを起動
 
 ```bash
-portree up            # 現在の worktree の全サービスを起動
-portree up --all      # 全 worktree の全サービスを起動
+# 推奨: 現在の worktree のサービスを起動し、共有プロキシも(必要なら)起動する
+portree up --ensure-proxy
+# HTTPS で起動する場合は --https を追加:
+portree up --ensure-proxy --https
+
+# その他の起動方法
+portree up                 # 現在の worktree のサービスのみ(プロキシは別途起動済みである必要)
+portree up --all           # 全 worktree のサービスを一括起動
 ```
 
-### 5. プロキシ起動
+プロキシは worktree 間で共有されます。`--ensure-proxy` は冪等で、既に起動していれば何もしません。プロキシを「他に使用中の worktree がなくなった時だけ自動で停止」させたい場合は `portree down --release-proxy` を使ってください。
 
-```bash
-portree proxy start
-# :3000 → frontend サービス
-# :8000 → backend サービス
+プロキシを手動管理したい場合は、`portree proxy start` でフォアグラウンド起動、`portree proxy stop` で停止できます。
 
-# HTTPS で起動する場合
-portree proxy start --https
-# 自動生成された証明書で HTTPS プロキシを起動
-```
-
-### 6. ブラウザで開く
+### 5. ブラウザで開く
 
 ```bash
 portree open                    # http://main.localhost:3000 を開く
@@ -112,23 +132,32 @@ portree open --service backend  # http://main.localhost:8000 を開く
 
 ## コマンド一覧
 
-| コマンド                        | 説明                                             |
-| ------------------------------- | ------------------------------------------------ |
-| `portree init`                  | `.portree.toml` 設定ファイルを作成               |
-| `portree up`                    | 現在の worktree のサービスを起動                 |
-| `portree up --all`              | 全 worktree のサービスを起動                     |
-| `portree up --service`          | 特定のサービスのみ起動                           |
-| `portree down`                  | 現在の worktree のサービスを停止                 |
-| `portree down --all`            | 全 worktree のサービスを停止                     |
-| `portree ls`                    | 全 worktree のサービス、ポート、状態、PID を表示 |
-| `portree dash`                  | インタラクティブ TUI ダッシュボードを起動        |
-| `portree proxy start`           | リバースプロキシを起動 (フォアグラウンド)        |
-| `portree proxy start --https`   | HTTPS リバースプロキシを起動 (自動証明書)        |
-| `portree proxy stop`            | リバースプロキシを停止                           |
-| `portree trust`                 | CA 証明書をシステム信頼ストアにインストール      |
-| `portree open`                  | 現在の worktree をブラウザで開く                 |
-| `portree doctor`                | 設定とポートの診断チェックを実行                 |
-| `portree version`               | バージョン情報を表示                             |
+| コマンド                            | 説明                                                                       |
+| ----------------------------------- | -------------------------------------------------------------------------- |
+| `portree init`                      | `.portree.toml` 設定ファイルを作成                                         |
+| `portree up`                        | 現在の worktree のサービスを起動 (冪等 — 既に動いているサービスはそのまま) |
+| `portree up --all`                  | すべての worktree のサービスを起動                                         |
+| `portree up --service <name>`       | 指定したサービスのみ起動                                                   |
+| `portree up --ensure-proxy`         | 共有プロキシも(まだ起動していなければ)バックグラウンド起動                 |
+| `portree up --ensure-proxy --https` | …HTTPS で起動(自動生成証明書)                                              |
+| `portree down`                      | 現在の worktree のサービスを停止                                           |
+| `portree down --all`                | すべての worktree のサービスを停止                                         |
+| `portree down --service <name>`     | 指定したサービスのみ停止                                                   |
+| `portree down --prune`              | 孤立したエントリと stale エントリを除去(動作中のプロセスには触れない)      |
+| `portree down --release-proxy`      | 他の worktree がまだサービスを動かしていない場合のみ共有プロキシを停止     |
+| `portree ls`                        | worktree、サービス、ポート、状態、PID、プロキシ URL(到達性付き)を一覧表示  |
+| `portree ls --json`                 | 同じ内容を JSON で出力(`url`、`direct_url`、`reachable` を含む)            |
+| `portree reset`                     | 現在の worktree の割り当てポートを保持しているプロセスを強制終了           |
+| `portree reset --all`               | 全 worktree について同じ処理を実行                                         |
+| `portree reset --proxy-port`        | プロキシポートを保持している portree 以外のリスナーも除去                  |
+| `portree dash`                      | インタラクティブ TUI ダッシュボードを起動                                  |
+| `portree proxy start`               | リバースプロキシを起動 (フォアグラウンド)                                  |
+| `portree proxy start --https`       | …HTTPS で起動(自動生成証明書)                                              |
+| `portree proxy stop`                | リバースプロキシを停止                                                     |
+| `portree trust`                     | CA 証明書をシステム信頼ストアにインストール                                |
+| `portree open`                      | 現在の worktree をブラウザで開く                                           |
+| `portree doctor`                    | 設定、ポート、状態の診断チェックを実行                                     |
+| `portree version`                   | バージョン情報を表示                                                       |
 
 ---
 
@@ -171,7 +200,7 @@ worktree ごとのオーバーライド。コマンド、固定ポート、追�
 
 ```toml
 [worktrees.main]
-services.frontend.port = 3100       # main ブランチのポートを固定
+services.frontend.port = 3100 # main ブランチのポートを固定
 
 [worktrees."feature/auth"]
 services.backend.command = "python manage.py runserver --settings=myapp.auth 0.0.0.0:$PORT"
@@ -356,6 +385,7 @@ portree down --all
 portree は bash、zsh、fish、PowerShell のシェル補完をサポートしています。
 
 **bash:**
+
 ```bash
 source <(portree completion bash)
 # 永続化する場合:
@@ -363,12 +393,14 @@ portree completion bash > /etc/bash_completion.d/portree
 ```
 
 **zsh:**
+
 ```bash
 portree completion zsh > "${fpath[1]}/_portree"
 # 新しいシェルを開くと有効になります。
 ```
 
 **fish:**
+
 ```bash
 portree completion fish | source
 # 永続化する場合:
@@ -376,6 +408,7 @@ portree completion fish > ~/.config/fish/completions/portree.fish
 ```
 
 **PowerShell:**
+
 ```powershell
 portree completion powershell | Out-String | Invoke-Expression
 # 永続化する場合:
@@ -398,12 +431,13 @@ portree completion powershell > portree.ps1
 - `portree doctor` を実行してポート競合を検出してください。
 - ポートが使用中の場合、portree は linear probing で範囲内の次の空きポートを探します。
 - 範囲全体が使い切られた場合は、`.portree.toml` の `port_range` を広げてください。
+- 前回クラッシュした `next dev` などの古い dev サーバーが worktree の割り当てポートを保持している場合、`portree reset` でそのプロセスを強制終了できます。プロキシポートに残っているリスナーも除去するには `portree reset --proxy-port` を使ってください。
 
 ### 古いプロセス (stale process)
 
-- `portree doctor` を実行して state ファイル内の古い PID を検出してください。
-- `portree down --all` で全サービスを停止してクリーンアップできます。
-- 外部からプロセスが kill された場合、`portree ls` は自動的に `stopped` として表示します。
+- `portree doctor` を実行して state ファイル内の古い PID を検出してください。出力には `portree down --prune` という解決コマンドが提示されます。
+- `portree down --prune` は stale エントリ(状態は `running` だが PID が既に終了)と孤立した worktree エントリを除去します。動作中のプロセスにはシグナルを送らないため、他の worktree への影響はありません。`--all` と組み合わせれば、同じ呼び出しで全 worktree のサービスも停止できます。
+- `portree reset` はより強力な手段で、現在の worktree の割り当てポートを保持しているプロセスを状態に関わらず強制終了します。
 
 ### プロキシが正しくルーティングしない
 
@@ -422,11 +456,11 @@ portree completion powershell > portree.ps1
 
 ## プラットフォームサポート
 
-| プラットフォーム | ステータス | 備考 |
-| -------------- | --------- | ---- |
-| **macOS** | 完全対応 | 主要開発プラットフォーム |
-| **Linux** | 完全対応 | Ubuntu, Debian, Fedora でテスト済み |
-| **Windows** | 実験的 | 基本機能は動作。ファイルロックは代替実装を使用。問題があれば報告をお願いします |
+| プラットフォーム | ステータス | 備考                                                                           |
+| ---------------- | ---------- | ------------------------------------------------------------------------------ |
+| **macOS**        | 完全対応   | 主要開発プラットフォーム                                                       |
+| **Linux**        | 完全対応   | Ubuntu, Debian, Fedora でテスト済み                                            |
+| **Windows**      | 実験的     | 基本機能は動作。ファイルロックは代替実装を使用。問題があれば報告をお願いします |
 
 ---
 
@@ -450,7 +484,11 @@ portree は linear probing を使用します。ハッシュで決まったポ�
 
 ### 状態はどこに保存されますか？
 
-ランタイム状態 (PID、ポート割り当て) は `.portree/state.json` に保存され、ファイルロックで同時アクセスの安全性を確保しています。
+ランタイム状態(PID、ポート割り当て、プロキシ状態)はリポジトリにつき 1 つの `.portree/state.json` に保存されます。場所は **メイン worktree のルート** (`git rev-parse --git-common-dir` で解決) で、すべての worktree がこのファイルを読み書きします。同時アクセスは `flock` ベースのロックで保護されています。リンク worktree 配下の `.portree/` ディレクトリは参照されません — 詳しくは [破壊的変更の説明](#v02x-からのアップグレード--破壊的変更) を参照してください。
+
+### 同じリポジトリの worktree 内で別々の portree インスタンスを並行運用できますか？
+
+できません(v0.3.0 以降)。各 git リポジトリには 1 つの portree 状態しかなく、すべての worktree がそれを共有します。これは複数 worktree でのワークフローを正しく動かすための意図的な変更です — 詳細は [ADR-15](./spx/15-multi-worktree-state.adr.md) を参照してください。完全に独立した portree インスタンスが必要な場合は、リポジトリ自体を別々にクローンしてください。
 
 ### ブランチごとに異なるコマンドを実行できますか？
 

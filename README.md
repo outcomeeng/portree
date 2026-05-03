@@ -12,6 +12,23 @@
 
 ---
 
+## Upgrading from v0.2.x — breaking change
+
+> [!WARNING]
+> **Starting with v0.3.0, every worktree of a repository shares one portree instance.** State (`.portree/state.json`) and config (`.portree.toml`) are now resolved from the **main worktree root** (via `git rev-parse --git-common-dir`) rather than from each calling worktree. This is the architectural change that makes multi-developer / multi-agent workflows actually work — but it removes the ability to run **separate, independent portree instances inside different worktrees of the same repo**.
+>
+> If you previously relied on per-worktree isolation (e.g., one developer running their own portree instance against a feature branch while another runs a different one against `main`), that is no longer possible. The shared state is the new model.
+>
+> **Migration:**
+>
+> - Delete any leftover `.portree/` directories under linked worktrees — they're ignored after the upgrade and serve no purpose.
+> - A `.portree.toml` checked in on a feature branch but absent from the main worktree is silently ignored. Move the config to a branch that is checked out in the main worktree (or just commit it once on `main`).
+> - Restart your services with `portree up`. State will be written to the canonical location.
+>
+> See [ADR-15](./spx/15-multi-worktree-state.adr.md) for the full rationale.
+
+---
+
 ## Demo
 
 ![portree workflow demo](./demo/demo-workflow.gif)
@@ -22,13 +39,18 @@
 
 - **Multi-service** — Define frontend, backend, and any number of services per worktree
 - **Automatic port allocation** — Hash-based port assignment (FNV32) with per-service ranges; no port conflicts across worktrees
+- **Shared multi-worktree state** — One canonical state file at the main worktree root; every worktree (and every developer/agent) sees the same view
+- **Idempotent `portree up`** — Running `up` again from another worktree leaves already-running services untouched
+- **Auto proxy lifecycle** — `up --ensure-proxy` starts the proxy in the background; `down --release-proxy` stops it only when no other worktree still needs it
 - **Subdomain reverse proxy** — Access any worktree via `branch-name.localhost:<port>` (no `/etc/hosts` editing required)
 - **HTTPS proxy** — Auto-generated certificates or custom cert/key for local HTTPS (Secure Cookies, Service Workers, etc.)
+- **Reachability indicator** — `portree ls` probes each proxy URL and shows whether the upstream is responding
 - **Environment variable injection** — `$PORT`, `$PT_BRANCH`, `$PT_BACKEND_URL`, etc. are injected automatically
 - **TUI dashboard** — Interactive terminal UI to start, stop, restart, and monitor all services
 - **Process lifecycle** — Graceful shutdown (SIGTERM → SIGKILL), log files, stale PID cleanup
+- **Orphan-port cleanup** — `portree reset` hunts down processes still bound to a worktree's allocated ports
 - **Per-worktree overrides** — Customize commands, ports, and env vars per branch
-- **AI agent friendly** — `portree ls --json` includes `url` and `direct_url` fields for automatic endpoint discovery
+- **AI agent friendly** — `portree ls --json` includes `url`, `direct_url`, and `reachable` fields for automatic endpoint discovery
 
 ---
 
@@ -82,26 +104,24 @@ proxy_port = 8000
 NODE_ENV = "development"
 ```
 
-### 4. Start services
+### 4. Start services and the proxy
 
 ```bash
-portree up            # Start all services for the current worktree
-portree up --all      # Start all services for ALL worktrees
+# Most common: start your worktree's services and ensure the shared proxy is running
+portree up --ensure-proxy
+# Add --https for HTTPS with auto-generated certificates:
+portree up --ensure-proxy --https
+
+# Variants
+portree up                 # Just your worktree's services (proxy must already be running)
+portree up --all           # Every worktree's services in one shot
 ```
 
-### 5. Start the proxy
+The proxy is shared across worktrees. `--ensure-proxy` is idempotent — if it's already running, nothing changes. To stop the proxy automatically once no worktree still needs it, use `portree down --release-proxy`.
 
-```bash
-portree proxy start
-# :3000 → frontend services
-# :8000 → backend services
+If you prefer to manage the proxy by hand, `portree proxy start` runs it in the foreground (blocking) and `portree proxy stop` halts it.
 
-# Or with HTTPS
-portree proxy start --https
-# Auto-generated certificates for local HTTPS
-```
-
-### 6. Open in browser
+### 5. Open in browser
 
 ```bash
 portree open                    # Opens http://main.localhost:3000
@@ -112,23 +132,32 @@ portree open --service backend  # Opens http://main.localhost:8000
 
 ## Commands
 
-| Command                      | Description                                           |
-| ---------------------------- | ----------------------------------------------------- |
-| `portree init`               | Create a `.portree.toml` configuration file           |
-| `portree up`                 | Start services for the current worktree               |
-| `portree up --all`           | Start services for all worktrees                      |
-| `portree up --service`       | Start a specific service only                         |
-| `portree down`               | Stop services for the current worktree                |
-| `portree down --all`         | Stop services for all worktrees                       |
-| `portree ls`                 | List all worktrees, services, ports, status, and PIDs |
-| `portree dash`               | Open the interactive TUI dashboard                    |
-| `portree proxy start`        | Start the reverse proxy (foreground)                  |
-| `portree proxy start --https`| Start the reverse proxy with HTTPS (auto-generated certs) |
-| `portree proxy stop`         | Stop the reverse proxy                                |
-| `portree trust`              | Install the CA certificate into the system trust store|
-| `portree open`               | Open the current worktree in a browser                |
-| `portree doctor`             | Run diagnostic checks on config and ports             |
-| `portree version`            | Print version information                             |
+| Command                             | Description                                                                            |
+| ----------------------------------- | -------------------------------------------------------------------------------------- |
+| `portree init`                      | Create a `.portree.toml` configuration file                                            |
+| `portree up`                        | Start services for the current worktree (idempotent — already-running services stay)   |
+| `portree up --all`                  | Start services for every worktree                                                      |
+| `portree up --service <name>`       | Start a single named service only                                                      |
+| `portree up --ensure-proxy`         | Also start the shared proxy in the background if it isn't already running              |
+| `portree up --ensure-proxy --https` | …with HTTPS (auto-generated certificates)                                              |
+| `portree down`                      | Stop services for the current worktree                                                 |
+| `portree down --all`                | Stop services for every worktree                                                       |
+| `portree down --service <name>`     | Stop a single named service only                                                       |
+| `portree down --prune`              | Remove orphaned and stale state entries (no live process is signalled)                 |
+| `portree down --release-proxy`      | Stop the shared proxy only if no other worktree still has running services             |
+| `portree ls`                        | List worktrees, services, ports, status, PIDs, and proxy URLs (with reachability)      |
+| `portree ls --json`                 | Same, as JSON for scripts and agents (includes `url`, `direct_url`, `reachable`)       |
+| `portree reset`                     | Hunt down and kill any process bound to the current worktree's allocated service ports |
+| `portree reset --all`               | Same for every worktree                                                                |
+| `portree reset --proxy-port`        | Also kill non-portree listeners on the configured proxy port(s)                        |
+| `portree dash`                      | Open the interactive TUI dashboard                                                     |
+| `portree proxy start`               | Start the reverse proxy in the foreground                                              |
+| `portree proxy start --https`       | …with HTTPS (auto-generated certificates)                                              |
+| `portree proxy stop`                | Stop the reverse proxy                                                                 |
+| `portree trust`                     | Install the CA certificate into the system trust store                                 |
+| `portree open`                      | Open the current worktree in a browser                                                 |
+| `portree doctor`                    | Run diagnostic checks on config, ports, and state                                      |
+| `portree version`                   | Print version information                                                              |
 
 ---
 
@@ -171,7 +200,7 @@ Per-worktree overrides. You can customize the command, fix a specific port, or a
 
 ```toml
 [worktrees.main]
-services.frontend.port = 3100       # Fixed port for main branch
+services.frontend.port = 3100 # Fixed port for main branch
 
 [worktrees."feature/auth"]
 services.backend.command = "python manage.py runserver --settings=myapp.auth 0.0.0.0:$PORT"
@@ -356,6 +385,7 @@ portree down --all
 portree supports shell completion for bash, zsh, fish, and PowerShell.
 
 **bash:**
+
 ```bash
 source <(portree completion bash)
 # Or for persistent use:
@@ -363,12 +393,14 @@ portree completion bash > /etc/bash_completion.d/portree
 ```
 
 **zsh:**
+
 ```bash
 portree completion zsh > "${fpath[1]}/_portree"
 # You may need to start a new shell for this to take effect.
 ```
 
 **fish:**
+
 ```bash
 portree completion fish | source
 # Or for persistent use:
@@ -376,6 +408,7 @@ portree completion fish > ~/.config/fish/completions/portree.fish
 ```
 
 **PowerShell:**
+
 ```powershell
 portree completion powershell | Out-String | Invoke-Expression
 # Or for persistent use:
@@ -398,12 +431,13 @@ portree completion powershell > portree.ps1
 - Run `portree doctor` to check for port conflicts.
 - If a port is already in use, portree uses linear probing to find the next available port in the range.
 - If the entire range is exhausted, widen the `port_range` in `.portree.toml`.
+- If a stale dev server (e.g., a `next dev` from a previous crashed run) is holding one of your worktree's allocated ports, run `portree reset` to hunt it down. Use `portree reset --proxy-port` to also clean stray listeners on the configured proxy port.
 
 ### Stale processes
 
-- Run `portree doctor` to detect stale PIDs in the state file.
-- Use `portree down --all` to clean up and stop all services.
-- If a process was killed externally, `portree ls` will show it as `stopped` automatically.
+- Run `portree doctor` to detect stale PIDs in the state file. The output names `portree down --prune` as the command that clears them.
+- `portree down --prune` reaps stale entries (status `running` but PID dead) and removes orphaned worktree entries — without signalling any live process. Compose with `--all` to also stop every worktree's services in the same call.
+- `portree reset` is the heavy hammer: kills any process bound to the current worktree's allocated ports, regardless of state.
 
 ### Proxy not routing correctly
 
@@ -423,11 +457,11 @@ portree completion powershell > portree.ps1
 
 ## Platform Support
 
-| Platform | Status | Notes |
-| -------- | ------ | ----- |
-| **macOS** | Fully supported | Primary development platform |
-| **Linux** | Fully supported | Tested on Ubuntu, Debian, Fedora |
-| **Windows** | Experimental | Basic functionality works; file locking uses alternative implementation. Please report issues. |
+| Platform    | Status          | Notes                                                                                          |
+| ----------- | --------------- | ---------------------------------------------------------------------------------------------- |
+| **macOS**   | Fully supported | Primary development platform                                                                   |
+| **Linux**   | Fully supported | Tested on Ubuntu, Debian, Fedora                                                               |
+| **Windows** | Experimental    | Basic functionality works; file locking uses alternative implementation. Please report issues. |
 
 ---
 
@@ -451,7 +485,11 @@ Service logs are written to `.portree/logs/<branch-slug>.<service>.log` in the m
 
 ### Where is state stored?
 
-Runtime state (PIDs, port assignments) is stored in `.portree/state.json` with file-level locking for concurrent access safety.
+Runtime state (PIDs, port assignments, proxy status) lives in a single `.portree/state.json` at the **main worktree root** (resolved via `git rev-parse --git-common-dir`). Every worktree of the same repository reads and writes that one file, with `flock`-based locking for concurrent access safety. `.portree/` directories under linked worktrees are not consulted — see [the breaking-change notice](#upgrading-from-v02x--breaking-change) for the rationale and migration.
+
+### Can I run separate portree instances in different worktrees of the same repo?
+
+No (since v0.3.0). Each git repository has exactly one portree state, shared by all worktrees. This was a deliberate change to make multi-worktree workflows actually work — see [ADR-15](./spx/15-multi-worktree-state.adr.md). If you need fully isolated portree instances, use separate repository clones.
 
 ### Can I run different commands per branch?
 
