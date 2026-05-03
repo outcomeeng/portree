@@ -14,8 +14,10 @@ import (
 )
 
 var (
-	upAll     bool
-	upService string
+	upAll         bool
+	upService     string
+	upEnsureProxy bool
+	upProxyHTTPS  bool
 )
 
 var upCmd = &cobra.Command{
@@ -35,7 +37,7 @@ var upCmd = &cobra.Command{
 			}
 		}
 
-		stateDir := filepath.Join(repoRoot, ".portree")
+		stateDir := filepath.Join(commonRoot, ".portree")
 		store, err := state.NewFileStore(stateDir)
 		if err != nil {
 			return fmt.Errorf("creating state store: %w", err)
@@ -66,6 +68,7 @@ var upCmd = &cobra.Command{
 		}
 
 		totalStarted := 0
+		totalAlreadyRunning := 0
 		for _, tree := range trees {
 			if tree.IsBare {
 				continue
@@ -73,9 +76,13 @@ var upCmd = &cobra.Command{
 			logging.Verbose("starting services for worktree %s (%s)", tree.Branch, tree.Path)
 			results := mgr.StartServices(&tree, upService)
 			for _, r := range results {
-				if r.Err != nil {
+				switch {
+				case r.Err != nil:
 					logging.Error("starting %s/%s: %v", r.Branch, r.Service, r.Err)
-				} else {
+				case r.AlreadyRunning:
+					logging.Info("%s for %s already running (PID %d)", r.Service, r.Branch, r.PID)
+					totalAlreadyRunning++
+				default:
 					logging.Info("Starting %s (port %d) for %s ...", r.Service, r.Port, r.Branch)
 					totalStarted++
 				}
@@ -93,6 +100,19 @@ var upCmd = &cobra.Command{
 				logging.Info("✓ %d %s started for %s", totalStarted, noun, trees[0].Branch)
 			}
 		}
+		if totalAlreadyRunning > 0 {
+			noun := "services"
+			if totalAlreadyRunning == 1 {
+				noun = "service"
+			}
+			logging.Info("✓ %d %s already running (idempotent)", totalAlreadyRunning, noun)
+		}
+
+		if upEnsureProxy {
+			if err := ensureProxyRunning(commonRoot, upProxyHTTPS); err != nil {
+				return err
+			}
+		}
 
 		return nil
 	},
@@ -101,5 +121,7 @@ var upCmd = &cobra.Command{
 func init() {
 	upCmd.Flags().BoolVar(&upAll, "all", false, "Start services for all worktrees")
 	upCmd.Flags().StringVar(&upService, "service", "", "Start only a specific service")
+	upCmd.Flags().BoolVar(&upEnsureProxy, "ensure-proxy", false, "Start the shared proxy if not already running (idempotent)")
+	upCmd.Flags().BoolVar(&upProxyHTTPS, "https", false, "When used with --ensure-proxy, start the proxy in HTTPS mode")
 	rootCmd.AddCommand(upCmd)
 }

@@ -54,11 +54,12 @@ func (m *Manager) deleteRunner(key string) {
 
 // ServiceResult describes the outcome of starting or stopping a service.
 type ServiceResult struct {
-	Branch  string
-	Service string
-	Port    int
-	PID     int
-	Err     error
+	Branch         string
+	Service        string
+	Port           int
+	PID            int
+	Err            error
+	AlreadyRunning bool
 }
 
 // StartServices starts services for the given worktree.
@@ -110,8 +111,39 @@ func (m *Manager) StartServices(tree *git.Worktree, serviceFilter string) []Serv
 			continue // port allocation failed, already reported
 		}
 
-		// Clean up stale processes.
+		// Clean up stale processes (PID dead, status running).
 		m.cleanStale(tree.Branch, svcName)
+
+		// If the service is already running per state, treat this start as a
+		// no-op idempotent success. A second `portree up` from another worktree
+		// must not respawn a service that's already alive — doing so would
+		// overwrite state with a new wrapper PID and leave the original
+		// process orphaned.
+		var existingPID int
+		if err := m.store.WithLock(func() error {
+			st, err := m.store.Load()
+			if err != nil {
+				return err
+			}
+			ss := state.GetServiceState(st, tree.Branch, svcName)
+			if ss != nil && ss.Status == state.StatusRunning && ss.PID > 0 && IsProcessRunning(ss.PID) {
+				existingPID = ss.PID
+			}
+			return nil
+		}); err != nil {
+			results = append(results, ServiceResult{
+				Branch: tree.Branch, Service: svcName, Port: p,
+				Err: fmt.Errorf("loading state: %w", err),
+			})
+			continue
+		}
+		if existingPID > 0 {
+			results = append(results, ServiceResult{
+				Branch: tree.Branch, Service: svcName, Port: p, PID: existingPID,
+				AlreadyRunning: true,
+			})
+			continue
+		}
 
 		// Check if port is available. If not, the port might be held by an orphan process.
 		if !IsPortAvailable(p) {

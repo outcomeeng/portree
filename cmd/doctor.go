@@ -38,13 +38,15 @@ var doctorCmd = &cobra.Command{
 				name: "inside git repository", ok: false, detail: err.Error(),
 			})
 			printResults(results)
-			return nil
+			return fmt.Errorf("doctor: one or more checks failed")
 		}
 
 		results = append(results, checkRepo(cwd))
 
-		// Config and state checks require a repo.
-		root, rootErr := git.FindRepoRoot(cwd)
+		// Config and state checks require a repo. Resolve to the main worktree
+		// root so config and state checks find the canonical location regardless
+		// of which worktree invoked doctor.
+		root, rootErr := git.MainWorktreeRoot(cwd)
 		if rootErr == nil {
 			results = append(results, checkConfig(root))
 
@@ -56,12 +58,14 @@ var doctorCmd = &cobra.Command{
 			}
 		}
 
-		printResults(results)
+		if !printResults(results) {
+			return fmt.Errorf("doctor: one or more checks failed")
+		}
 		return nil
 	},
 }
 
-func printResults(results []checkResult) {
+func printResults(results []checkResult) bool {
 	allOK := true
 	for _, r := range results {
 		mark := "✓"
@@ -80,6 +84,7 @@ func printResults(results []checkResult) {
 	} else {
 		fmt.Println("\nSome checks failed. See details above.")
 	}
+	return allOK
 }
 
 func checkGit() checkResult {
@@ -186,7 +191,7 @@ func checkStaleState(root string) checkResult {
 		return checkResult{
 			name:   "state file healthy",
 			ok:     false,
-			detail: fmt.Sprintf("%d stale: %v", len(staleDetails), staleDetails),
+			detail: fmt.Sprintf("%d stale: %v (run 'portree down --prune' to clear)", len(staleDetails), staleDetails),
 		}
 	}
 
