@@ -2,6 +2,7 @@ package controls_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -117,7 +118,8 @@ func runPortree(t *testing.T, dir string, args ...string) (stdout, stderr string
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
-		if ex, ok := err.(*exec.ExitError); ok {
+		var ex *exec.ExitError
+		if errors.As(err, &ex) {
 			exitCode = ex.ExitCode()
 		}
 	}

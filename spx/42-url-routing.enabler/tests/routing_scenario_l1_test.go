@@ -31,9 +31,12 @@ func freePort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("freePort: %v", err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
+	addr, ok := ln.Addr().(*net.TCPAddr)
 	_ = ln.Close()
-	return port
+	if !ok {
+		t.Fatalf("freePort: unexpected listener address type %T", ln.Addr())
+	}
+	return addr.Port
 }
 
 func setupProxy(t *testing.T, backendPort, proxyPort int) (*proxy.ProxyServer, *state.FileStore) {
@@ -92,7 +95,7 @@ func TestProxyForwardsRequestToUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET proxy error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -203,7 +206,7 @@ func TestHTTPSProxyEstablishesWithoutTLSError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTTPS proxy request error (TLS handshake failure would appear here): %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("HTTPS proxy status = %d, want 200", resp.StatusCode)
 	}

@@ -33,18 +33,30 @@ func TestValidationMappings(t *testing.T) {
 			wantErr: "web",
 		},
 		{
-			name:    "port_range.min > port_range.max maps to validation error",
-			mutate:  func(c *config.Config) { s := c.Services["web"]; s.PortRange = config.PortRange{Min: 4000, Max: 3000}; c.Services["web"] = s },
+			name: "port_range.min > port_range.max maps to validation error",
+			mutate: func(c *config.Config) {
+				s := c.Services["web"]
+				s.PortRange = config.PortRange{Min: 4000, Max: 3000}
+				c.Services["web"] = s
+			},
 			wantErr: "must be <=",
 		},
 		{
-			name:    "port_range.min zero maps to validation error",
-			mutate:  func(c *config.Config) { s := c.Services["web"]; s.PortRange = config.PortRange{Min: 0, Max: 3199}; c.Services["web"] = s },
+			name: "port_range.min zero maps to validation error",
+			mutate: func(c *config.Config) {
+				s := c.Services["web"]
+				s.PortRange = config.PortRange{Min: 0, Max: 3199}
+				c.Services["web"] = s
+			},
 			wantErr: "positive",
 		},
 		{
-			name:    "port_range.max zero maps to validation error",
-			mutate:  func(c *config.Config) { s := c.Services["web"]; s.PortRange = config.PortRange{Min: 3100, Max: 0}; c.Services["web"] = s },
+			name: "port_range.max zero maps to validation error",
+			mutate: func(c *config.Config) {
+				s := c.Services["web"]
+				s.PortRange = config.PortRange{Min: 3100, Max: 0}
+				c.Services["web"] = s
+			},
 			wantErr: "positive",
 		},
 		{

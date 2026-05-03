@@ -54,4 +54,3 @@ func TestLoadMissingConfigReturnsInstructiveError(t *testing.T) {
 		t.Errorf("error should mention 'portree init', got: %v", err)
 	}
 }
-

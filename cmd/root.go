@@ -12,9 +12,9 @@ import (
 
 var (
 	// Populated by PersistentPreRunE for subcommands.
-	repoRoot  string
+	repoRoot   string
 	commonRoot string
-	cfg       *config.Config
+	cfg        *config.Config
 )
 
 var rootCmd = &cobra.Command{

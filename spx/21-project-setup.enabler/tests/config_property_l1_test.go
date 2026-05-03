@@ -50,7 +50,7 @@ func TestEnvMergeWorktreeOverridesGlobal(t *testing.T) {
 			},
 		},
 		Env: map[string]string{
-			"SHARED_KEY": "global-value",
+			"SHARED_KEY":  "global-value",
 			"GLOBAL_ONLY": "only-in-global",
 		},
 		Worktrees: map[string]config.WTOverride{
@@ -78,7 +78,7 @@ func TestEnvMergeIsDeterministic(t *testing.T) {
 	cfg := &config.Config{
 		Services: map[string]config.ServiceConfig{
 			"web": {
-				Command: "npm start",
+				Command:   "npm start",
 				PortRange: config.PortRange{Min: 3100, Max: 3199},
 				ProxyPort: 3000,
 			},

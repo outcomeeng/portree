@@ -113,7 +113,7 @@ var downCmd = &cobra.Command{
 
 // pruneOrphanedState removes state entries for branches whose worktrees no
 // longer exist and reaps stale entries whose recorded PID is no longer alive.
-// Both kinds are non-destructive — no live processes are signalled.
+// Both kinds are non-destructive — no live processes are signaled.
 func pruneOrphanedState(store *state.FileStore, cwd string) error {
 	trees, err := git.ListWorktrees(cwd)
 	if err != nil {

@@ -14,10 +14,10 @@ import (
 )
 
 var (
-	upAll          bool
-	upService      string
-	upEnsureProxy  bool
-	upProxyHTTPS   bool
+	upAll         bool
+	upService     string
+	upEnsureProxy bool
+	upProxyHTTPS  bool
 )
 
 var upCmd = &cobra.Command{
