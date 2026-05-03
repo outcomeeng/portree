@@ -15,3 +15,9 @@ jobs:
     uses: outcomeeng/gh-actions/.github/workflows/claude-code-review.yml@main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    with:
+      # Workaround for an event-payload quirk: PRs created in a forked repo
+      # surface `pull_request.author_association: NONE` even when the API
+      # returns MEMBER. The reusable workflow gates on this value, so NONE
+      # must be in the allowlist for the auto-review to fire on those PRs.
+      authorized_roles: '["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"]'
