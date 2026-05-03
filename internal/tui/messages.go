@@ -15,13 +15,20 @@ type StatusUpdateMsg struct {
 }
 
 // ServiceRow represents a single row in the dashboard table.
+//
+// URL and Reachable are populated when the proxy is running — URL holds the
+// fully formed proxy URL (`http://{slug}.localhost:{proxy_port}`), Reachable
+// is the result of a HEAD probe against it (true iff the response status is
+// below 500). When the proxy is stopped, URL is empty and Reachable is false.
 type ServiceRow struct {
-	Branch  string
-	Slug    string
-	Service string
-	Port    int
-	Status  string // state.StatusRunning or state.StatusStopped
-	PID     int
+	Branch    string
+	Slug      string
+	Service   string
+	Port      int
+	Status    string // state.StatusRunning or state.StatusStopped
+	PID       int
+	URL       string
+	Reachable bool
 }
 
 // ActionResultMsg carries the result of a user action (start/stop/restart).

@@ -23,17 +23,17 @@ func TestWorktreeColumnWidth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := worktreeColumnWidth(tt.termWidth)
+			got := worktreeColumnWidth(tt.termWidth, false)
 			if got < tt.wantMin {
-				t.Errorf("worktreeColumnWidth(%d) = %d, want >= %d", tt.termWidth, got, tt.wantMin)
+				t.Errorf("worktreeColumnWidth(%d, false) = %d, want >= %d", tt.termWidth, got, tt.wantMin)
 			}
 		})
 	}
 }
 
 func TestWorktreeColumnWidthGrowsWithTerminal(t *testing.T) {
-	narrow := worktreeColumnWidth(80)
-	wide := worktreeColumnWidth(200)
+	narrow := worktreeColumnWidth(80, false)
+	wide := worktreeColumnWidth(200, false)
 	if wide <= narrow {
 		t.Errorf("wider terminal should give wider column: 80->%d, 200->%d", narrow, wide)
 	}

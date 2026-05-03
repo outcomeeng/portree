@@ -16,7 +16,9 @@ import (
 	"github.com/fairy-pitta/portree/internal/logging"
 	"github.com/fairy-pitta/portree/internal/port"
 	"github.com/fairy-pitta/portree/internal/process"
+	"github.com/fairy-pitta/portree/internal/proxy"
 	"github.com/fairy-pitta/portree/internal/state"
+	"github.com/fairy-pitta/portree/internal/status"
 )
 
 const (
@@ -27,13 +29,13 @@ const (
 
 // Model is the top-level Bubble Tea model for the dashboard.
 type Model struct {
-	cfg      *config.Config
-	repoRoot string
-	store    *state.FileStore
-	registry *port.Registry
-	manager  *process.Manager
-	keys     KeyMap
-	trees    []git.Worktree // cached at init
+	cfg        *config.Config
+	commonRoot string
+	store      *state.FileStore
+	registry   *port.Registry
+	manager    *process.Manager
+	keys       KeyMap
+	trees      []git.Worktree // cached at init
 
 	rows         []ServiceRow
 	cursor       int
@@ -45,8 +47,8 @@ type Model struct {
 }
 
 // NewModel creates a new dashboard model.
-func NewModel(cfg *config.Config, repoRoot string) (*Model, error) {
-	stateDir := filepath.Join(repoRoot, ".portree")
+func NewModel(cfg *config.Config, commonRoot string) (*Model, error) {
+	stateDir := filepath.Join(commonRoot, ".portree")
 	store, err := state.NewFileStore(stateDir)
 	if err != nil {
 		return nil, err
@@ -78,7 +80,7 @@ func NewModel(cfg *config.Config, repoRoot string) (*Model, error) {
 
 	return &Model{
 		cfg:        cfg,
-		repoRoot:   repoRoot,
+		commonRoot: commonRoot,
 		store:      store,
 		registry:   registry,
 		manager:    mgr,
@@ -199,8 +201,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.stopAll
 
 	case key.Matches(msg, m.keys.ToggleProxy):
-		m.statusMsg = "Proxy toggle not supported in dashboard (use 'portree proxy start' in a separate terminal)"
-		return m, nil
+		return m, m.toggleProxy
 
 	case key.Matches(msg, m.keys.ViewLogs):
 		return m, m.viewLogs
@@ -216,13 +217,10 @@ func (m *Model) selectedRow() *ServiceRow {
 	return nil
 }
 
+// refreshStatus loads current state and converts it into dashboard rows.
+// Delegates to internal/status for assembly + reachability probing so the
+// TUI surfaces the same URL + reachability information as `portree status`.
 func (m *Model) refreshStatus() tea.Msg {
-	serviceNames := make([]string, 0, len(m.cfg.Services))
-	for name := range m.cfg.Services {
-		serviceNames = append(serviceNames, name)
-	}
-	sort.Strings(serviceNames)
-
 	var st *state.State
 	if err := m.store.WithLock(func() error {
 		var e error
@@ -235,32 +233,22 @@ func (m *Model) refreshStatus() tea.Msg {
 		return StatusUpdateMsg{}
 	}
 
+	statuses := status.Build(m.trees, m.cfg, st)
+	status.Probe(statuses, status.DefaultProbeTimeout)
+
 	var rows []ServiceRow
-	for _, tree := range m.trees {
-		if tree.IsBare {
-			continue
-		}
-		for _, svcName := range serviceNames {
-			row := ServiceRow{
-				Branch:  tree.Branch,
-				Slug:    tree.Slug(),
-				Service: svcName,
-			}
-
-			ss := state.GetServiceState(st, tree.Branch, svcName)
-			if ss != nil {
-				row.Port = ss.Port
-				row.PID = ss.PID
-				if ss.PID > 0 && process.IsProcessRunning(ss.PID) {
-					row.Status = state.StatusRunning
-				} else {
-					row.Status = state.StatusStopped
-				}
-			} else {
-				row.Status = state.StatusStopped
-			}
-
-			rows = append(rows, row)
+	for _, ws := range statuses {
+		for _, svc := range ws.Services {
+			rows = append(rows, ServiceRow{
+				Branch:    ws.Worktree,
+				Slug:      ws.Slug,
+				Service:   svc.Name,
+				Port:      svc.Port,
+				Status:    svc.Status,
+				PID:       svc.PID,
+				URL:       svc.ProxyURL,
+				Reachable: svc.ProxyReachable,
+			})
 		}
 	}
 
@@ -276,11 +264,32 @@ func (m *Model) startSelected() tea.Msg {
 	tree := &git.Worktree{Path: m.worktreePath(row.Branch), Branch: row.Branch}
 	results := m.manager.StartServices(tree, row.Service)
 	for _, r := range results {
-		if r.Err != nil {
+		switch {
+		case r.Err != nil:
 			return ActionResultMsg{Message: fmt.Sprintf("Error: %v", r.Err), IsError: true}
+		case r.AlreadyRunning:
+			return ActionResultMsg{Message: fmt.Sprintf("%s for %s already running (PID %d)", row.Service, row.Branch, r.PID)}
 		}
 	}
 	return ActionResultMsg{Message: fmt.Sprintf("Started %s for %s", row.Service, row.Branch)}
+}
+
+// toggleProxy starts the shared proxy via proxy.EnsureRunning when stopped,
+// or stops it via proxy.ReleaseIfUnused when running. Mirrors the lifecycle
+// semantics of `portree up --ensure-proxy` and `portree down --release-proxy`
+// — it will refuse to stop the proxy if any other worktree still has running
+// services.
+func (m *Model) toggleProxy() tea.Msg {
+	if m.proxyRunning {
+		if err := proxy.ReleaseIfUnused(m.commonRoot); err != nil {
+			return ActionResultMsg{Message: fmt.Sprintf("Error releasing proxy: %v", err), IsError: true}
+		}
+		return ActionResultMsg{Message: "Proxy release requested"}
+	}
+	if err := proxy.EnsureRunning(m.commonRoot, false); err != nil {
+		return ActionResultMsg{Message: fmt.Sprintf("Error starting proxy: %v", err), IsError: true}
+	}
+	return ActionResultMsg{Message: "Proxy started"}
 }
 
 func (m *Model) stopSelected() tea.Msg {
@@ -408,12 +417,12 @@ func (m *Model) worktreePath(branch string) string {
 			return t.Path
 		}
 	}
-	return m.repoRoot
+	return m.commonRoot
 }
 
 // Run launches the Bubble Tea program.
-func Run(cfg *config.Config, repoRoot string) error {
-	model, err := NewModel(cfg, repoRoot)
+func Run(cfg *config.Config, commonRoot string) error {
+	model, err := NewModel(cfg, commonRoot)
 	if err != nil {
 		return err
 	}

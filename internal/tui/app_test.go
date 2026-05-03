@@ -10,6 +10,8 @@ import (
 
 	"github.com/fairy-pitta/portree/internal/config"
 	"github.com/fairy-pitta/portree/internal/git"
+	"github.com/fairy-pitta/portree/internal/port"
+	"github.com/fairy-pitta/portree/internal/process"
 	"github.com/fairy-pitta/portree/internal/state"
 )
 
@@ -66,6 +68,95 @@ func TestModelView_WithRows(t *testing.T) {
 	}
 	if !strings.Contains(view, "frontend") {
 		t.Error("view should contain service name")
+	}
+}
+
+// TestModelView_RendersURLColumnWithReachability verifies that when at least
+// one row carries a URL (i.e. the proxy is running and the row's proxy URL
+// is set), the dashboard table renders a URL column and the reachability
+// marker — corresponding to the spec's "TUI dashboard renders proxy URL with
+// reachability indicator" assertion.
+func TestModelView_RendersURLColumnWithReachability(t *testing.T) {
+	rows := []ServiceRow{
+		{
+			Branch: "main", Service: "frontend",
+			Port: 3100, Status: state.StatusRunning, PID: 123,
+			URL:       "http://main.localhost:3000",
+			Reachable: true,
+		},
+	}
+	m := testModel(t, rows)
+	view := m.View()
+
+	if !strings.Contains(view, "URL") {
+		t.Error("view should contain URL column header when at least one row carries a URL")
+	}
+	if !strings.Contains(view, "main.localhost:3000") {
+		t.Errorf("view should render the proxy URL; got:\n%s", view)
+	}
+	if !strings.Contains(view, "✓") {
+		t.Error("view should render the reachability ✓ marker for a reachable row")
+	}
+}
+
+// TestStartSelected_AlreadyRunningSurfaced verifies that when the selected
+// service is already alive, startSelected reports "already running (PID N)"
+// rather than "Started" — mirroring `portree up`'s idempotency contract.
+//
+// We exercise this by constructing a Model with a row whose PID points at
+// our own process (always alive), wiring up a real Manager that observes
+// state, then invoking startSelected. The result message must reflect the
+// idempotent path. Manager.StartServices reads state via the provided store;
+// we pre-seed state to mark the service "running" with our PID.
+func TestStartSelected_AlreadyRunningSurfaced(t *testing.T) {
+	// Use a trivial config with one service. The command will never run
+	// because state already says the service is alive — Manager will short-
+	// circuit with AlreadyRunning.
+	cfg := &config.Config{
+		Services: map[string]config.ServiceConfig{
+			"web": {
+				Command:   "true",
+				PortRange: config.PortRange{Min: 3100, Max: 3199},
+				ProxyPort: 3000,
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	store, err := state.NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	st := &state.State{
+		Services:        map[string]map[string]*state.ServiceState{},
+		PortAssignments: map[string]int{},
+	}
+	state.SetServiceState(st, "main", "web", state.RunningServiceState(3100, os.Getpid()))
+	state.SetPortAssignment(st, "main", "web", 3100)
+	if err := store.Save(st); err != nil {
+		t.Fatalf("saving state: %v", err)
+	}
+
+	m := &Model{
+		cfg:     cfg,
+		store:   store,
+		manager: process.NewManager(cfg, store, port.NewRegistry(store, cfg)),
+		trees:   []git.Worktree{{Path: dir, Branch: "main"}},
+		rows: []ServiceRow{
+			{Branch: "main", Service: "web", Port: 3100, Status: state.StatusRunning, PID: os.Getpid()},
+		},
+	}
+
+	msg := m.startSelected()
+	result, ok := msg.(ActionResultMsg)
+	if !ok {
+		t.Fatalf("startSelected returned %T, want ActionResultMsg", msg)
+	}
+	if !strings.Contains(result.Message, "already running") {
+		t.Errorf("startSelected on a live service should surface 'already running'; got %q", result.Message)
+	}
+	if result.IsError {
+		t.Error("AlreadyRunning is success (idempotent), not an error")
 	}
 }
 
@@ -236,12 +327,12 @@ func TestModelUpdate_ActionResultMsg(t *testing.T) {
 func TestModelUpdate_ToggleProxy(t *testing.T) {
 	m := testModel(t, nil)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	model := mustModel(t, updated)
-
-	if model.statusMsg == "" {
-		t.Error("toggle proxy should set a status message")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if cmd == nil {
+		t.Fatal("pressing `p` should return a tea.Cmd that triggers the proxy lifecycle")
 	}
+	// The actual lifecycle (spawn or release) is exercised by L2 tests against
+	// the real binary; here we just confirm the key wires through to a command.
 }
 
 func TestSelectedRow(t *testing.T) {
@@ -335,7 +426,7 @@ func TestModelUpdate_TickMsg(t *testing.T) {
 
 func TestWorktreePath(t *testing.T) {
 	m := testModel(t, nil)
-	m.repoRoot = "/tmp/repo"
+	m.commonRoot = "/tmp/repo"
 	m.trees = []git.Worktree{
 		{Path: "/tmp/repo", Branch: "main"},
 		{Path: "/tmp/repo-feature", Branch: "feature/auth"},

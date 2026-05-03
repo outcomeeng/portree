@@ -9,12 +9,14 @@ import (
 	"github.com/fairy-pitta/portree/internal/state"
 )
 
-// Fixed column widths for SERVICE, PORT, STATUS, PID.
+// Fixed column widths for SERVICE, PORT, STATUS, PID, and the optional URL
+// column rendered when at least one row carries a non-empty URL.
 const (
 	colServiceWidth = 12
 	colPortWidth    = 8
 	colStatusWidth  = 14
 	colPIDWidth     = 10
+	colURLWidth     = 38
 	colSeparators   = 4 * 2 // 4 separators × 2 chars ("  ")
 	colCursorPrefix = 2     // "▸ " or "  "
 	colMinWorktree  = 18
@@ -23,21 +25,36 @@ const (
 // fixedColumnsWidth is the sum of all non-WORKTREE columns plus separators and cursor.
 const fixedColumnsWidth = colServiceWidth + colPortWidth + colStatusWidth + colPIDWidth + colSeparators + colCursorPrefix
 
-// worktreeColumnWidth computes the dynamic WORKTREE column width.
-func worktreeColumnWidth(termWidth int) int {
+// worktreeColumnWidth computes the dynamic WORKTREE column width. When the
+// URL column is rendered, hasURL adjusts the budget accordingly.
+func worktreeColumnWidth(termWidth int, hasURL bool) int {
 	// borderOverhead accounts for borderStyle: RoundedBorder (1 char each side) + Padding(1,2) (2 chars each side) = ~6.
 	// Update this if borderStyle in styles.go changes.
 	const borderOverhead = 6
-	available := termWidth - fixedColumnsWidth - borderOverhead
+	extra := 0
+	if hasURL {
+		extra = colURLWidth + 2 // column + one separator
+	}
+	available := termWidth - fixedColumnsWidth - extra - borderOverhead
 	if available < colMinWorktree {
 		return colMinWorktree
 	}
 	return available
 }
 
-// renderTable renders the dashboard table with the given rows and cursor position.
+// renderTable renders the dashboard table with the given rows and cursor
+// position. When the proxy is running and at least one row carries a URL,
+// an additional URL column is inserted (showing the proxy URL with a
+// reachability indicator).
 func renderTable(rows []ServiceRow, cursor int, termWidth int) string {
-	wtWidth := worktreeColumnWidth(termWidth)
+	hasURL := false
+	for _, row := range rows {
+		if row.URL != "" {
+			hasURL = true
+			break
+		}
+	}
+	wtWidth := worktreeColumnWidth(termWidth, hasURL)
 
 	var b strings.Builder
 
@@ -45,10 +62,16 @@ func renderTable(rows []ServiceRow, cursor int, termWidth int) string {
 	headerCells := []string{
 		lipgloss.NewStyle().Width(wtWidth).Bold(true).Foreground(colorWhite).Render("WORKTREE"),
 		lipgloss.NewStyle().Width(colServiceWidth).Bold(true).Foreground(colorWhite).Render("SERVICE"),
+	}
+	if hasURL {
+		headerCells = append(headerCells,
+			lipgloss.NewStyle().Width(colURLWidth).Bold(true).Foreground(colorWhite).Render("URL"))
+	}
+	headerCells = append(headerCells,
 		lipgloss.NewStyle().Width(colPortWidth).Bold(true).Foreground(colorWhite).Render("PORT"),
 		lipgloss.NewStyle().Width(colStatusWidth).Bold(true).Foreground(colorWhite).Render("STATUS"),
 		lipgloss.NewStyle().Width(colPIDWidth).Bold(true).Foreground(colorWhite).Render("PID"),
-	}
+	)
 	header := "  " + strings.Join(headerCells, "  ") // leading spaces align with cursor prefix on data rows
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
@@ -73,10 +96,16 @@ func renderTable(rows []ServiceRow, cursor int, termWidth int) string {
 		cells := []string{
 			lipgloss.NewStyle().Width(wtWidth).Render(row.Branch),
 			lipgloss.NewStyle().Width(colServiceWidth).Render(row.Service),
+		}
+		if hasURL {
+			cells = append(cells,
+				lipgloss.NewStyle().Width(colURLWidth).Render(formatURLCell(row.URL, row.Reachable)))
+		}
+		cells = append(cells,
 			lipgloss.NewStyle().Width(colPortWidth).Render(portStr),
 			lipgloss.NewStyle().Width(colStatusWidth).Render(statusStr),
 			lipgloss.NewStyle().Width(colPIDWidth).Render(pidStr),
-		}
+		)
 
 		line := strings.Join(cells, "  ")
 
@@ -92,6 +121,20 @@ func renderTable(rows []ServiceRow, cursor int, termWidth int) string {
 	}
 
 	return b.String()
+}
+
+// formatURLCell composes the URL column value: the URL itself plus a small
+// "✓" or "✗" suffix indicating reachability. When the row has no URL (e.g.
+// the proxy isn't running for this service), an em-dash placeholder is used.
+func formatURLCell(url string, reachable bool) string {
+	if url == "" {
+		return "—"
+	}
+	marker := "✗"
+	if reachable {
+		marker = "✓"
+	}
+	return fmt.Sprintf("%s %s", marker, url)
 }
 
 // renderProxyStatus renders the proxy status line.
