@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/fairy-pitta/portree/internal/git"
@@ -101,7 +102,9 @@ var downCmd = &cobra.Command{
 	},
 }
 
-// pruneOrphanedState removes state entries for branches whose worktrees no longer exist.
+// pruneOrphanedState removes state entries for branches whose worktrees no
+// longer exist and reaps stale entries whose recorded PID is no longer alive.
+// Both kinds are non-destructive — no live processes are signalled.
 func pruneOrphanedState(store *state.FileStore, cwd string) error {
 	trees, err := git.ListWorktrees(cwd)
 	if err != nil {
@@ -115,7 +118,7 @@ func pruneOrphanedState(store *state.FileStore, cwd string) error {
 		}
 	}
 
-	var pruned []string
+	var pruned, reaped []string
 	if err := store.WithLock(func() error {
 		st, e := store.Load()
 		if e != nil {
@@ -135,15 +138,31 @@ func pruneOrphanedState(store *state.FileStore, cwd string) error {
 			}
 		}
 
+		// Reap stale entries: status=running but PID is no longer alive.
+		for branch, services := range st.Services {
+			for svcName, ss := range services {
+				if ss.Status == state.StatusRunning && ss.PID > 0 && !process.IsProcessRunning(ss.PID) {
+					reaped = append(reaped, fmt.Sprintf("%s/%s", branch, svcName))
+					state.SetServiceState(st, branch, svcName, state.StoppedServiceState(ss.Port))
+				}
+			}
+		}
+
 		return store.Save(st)
 	}); err != nil {
 		return fmt.Errorf("pruning state: %w", err)
 	}
 
 	if len(pruned) > 0 {
+		sort.Strings(pruned)
 		logging.Info("Pruned %d orphaned branch(es): %s", len(pruned), strings.Join(pruned, ", "))
-	} else {
-		logging.Info("No orphaned state entries found.")
+	}
+	if len(reaped) > 0 {
+		sort.Strings(reaped)
+		logging.Info("Reaped %d stale entry/entries: %s", len(reaped), strings.Join(reaped, ", "))
+	}
+	if len(pruned) == 0 && len(reaped) == 0 {
+		logging.Info("No orphaned or stale state entries found.")
 	}
 
 	return nil

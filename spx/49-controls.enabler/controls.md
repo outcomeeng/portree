@@ -16,6 +16,8 @@ CAN manage portree services from the terminal and discover service endpoints pro
 - Given multiple worktrees exist, when `portree up --all` runs from any worktree, then services start for every non-bare worktree ([test](tests/controls_flags_l2_test.go))
 - Given a configured service name, when `portree up --service <name>` runs, then only that service starts ([test](tests/controls_flags_l2_test.go))
 - Given orphaned state entries for removed worktrees, when `portree down --prune` runs, then those entries are removed and the command exits 0 ([test](tests/controls_flags_l2_test.go))
+- Given stale state entries (status running, recorded PID no longer alive), when `portree down --prune` runs, then those entries are marked stopped without disturbing any actually-running services ([test](tests/controls_multiworktree_l2_test.go))
+- Given stale state entries detected by `portree doctor`, when the diagnostic output is rendered, then the stale-state row names `portree down --prune` as the command that clears the entries ([test](tests/controls_multiworktree_l2_test.go))
 - Given running services across all worktrees and orphaned state entries, when `portree down --all --prune` runs from any worktree, then every worktree's services stop and orphaned entries are removed in a single invocation ([test](tests/controls_multiworktree_l2_test.go))
 
 ### Compliance

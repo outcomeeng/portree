@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // commitConfig commits .portree.toml so it appears in linked worktrees that
@@ -167,6 +168,116 @@ func initBareRepo(t *testing.T) string {
 		}
 	}
 	return dir
+}
+
+// TestDownPruneReapsStaleEntries verifies that `portree down --prune` clears
+// state entries whose recorded PID is no longer alive. It must do so without
+// touching any actually-running services (no SIGTERM to live processes).
+func TestDownPruneReapsStaleEntries(t *testing.T) {
+	mainDir := setupTestRepo(t)
+	commitConfig(t, mainDir)
+
+	liveDir := filepath.Join(t.TempDir(), "live-worktree")
+	addWorktree(t, mainDir, liveDir, "live")
+
+	if _, stderr, code := runPortree(t, mainDir, "up", "--all"); code != 0 {
+		t.Fatalf("portree up --all exited %d; stderr:\n%s", code, stderr)
+	}
+	t.Cleanup(func() { runPortree(t, mainDir, "down", "--all") })
+
+	// Capture both PIDs and SIGKILL only the main branch's, simulating a
+	// crashed service whose state entry was left as "running".
+	stdout, _, _ := runPortree(t, mainDir, "ls", "--json")
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		t.Fatalf("ls --json: %v\n%s", err, stdout)
+	}
+	var stalePID, livePID int
+	for _, e := range entries {
+		wt, _ := e["worktree"].(string)
+		pidF, _ := e["pid"].(float64)
+		switch {
+		case wt != "live" && stalePID == 0 && pidF > 0:
+			stalePID = int(pidF)
+		case wt == "live" && livePID == 0 && pidF > 0:
+			livePID = int(pidF)
+		}
+	}
+	if stalePID == 0 || livePID == 0 {
+		t.Fatalf("expected one PID each for stale-target and live worktree; entries:\n%s", stdout)
+	}
+	if err := syscall.Kill(-stalePID, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill -%d: %v", stalePID, err)
+	}
+	// Wait for the killed PID to be reaped.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(stalePID, 0); err != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if _, stderr, code := runPortree(t, mainDir, "down", "--prune"); code != 0 {
+		t.Fatalf("portree down --prune exited %d; stderr:\n%s", code, stderr)
+	}
+
+	// The live service must still be running (--prune must not kill anything).
+	if err := syscall.Kill(livePID, 0); err != nil {
+		t.Errorf("live service PID %d was killed by `down --prune`: %v", livePID, err)
+	}
+
+	// Doctor's stale check must now pass.
+	stdout, stderr, _ := runPortree(t, mainDir, "doctor")
+	if strings.Contains(stdout+stderr, "stale") {
+		t.Errorf("doctor still reports stale entries after `down --prune`:\n%s\n%s", stdout, stderr)
+	}
+}
+
+// TestDoctorStaleHintsAtPrune verifies that doctor's stale-state row names
+// the command that clears the entries.
+func TestDoctorStaleHintsAtPrune(t *testing.T) {
+	mainDir := setupTestRepo(t)
+
+	if _, stderr, code := runPortree(t, mainDir, "up"); code != 0 {
+		t.Fatalf("portree up exited %d; stderr:\n%s", code, stderr)
+	}
+	t.Cleanup(func() { runPortree(t, mainDir, "down") })
+
+	stdout, _, _ := runPortree(t, mainDir, "ls", "--json")
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		t.Fatalf("ls --json: %v", err)
+	}
+	var pid int
+	for _, e := range entries {
+		if pf, ok := e["pid"].(float64); ok && pf > 0 {
+			pid = int(pf)
+			break
+		}
+	}
+	if pid == 0 {
+		t.Fatal("no running PID after up")
+	}
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill -%d: %v", pid, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	stdout, stderr, _ := runPortree(t, mainDir, "doctor")
+	combined := stdout + stderr
+	if !strings.Contains(combined, "stale") {
+		t.Fatalf("doctor should report stale entries; got:\n%s", combined)
+	}
+	if !strings.Contains(combined, "down --prune") {
+		t.Errorf("doctor's stale-state row should name `portree down --prune`; got:\n%s", combined)
+	}
 }
 
 // TestStateFileIsInMainWorktreeRoot verifies that portree commands invoked from

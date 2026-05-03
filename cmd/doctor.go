@@ -191,7 +191,7 @@ func checkStaleState(root string) checkResult {
 		return checkResult{
 			name:   "state file healthy",
 			ok:     false,
-			detail: fmt.Sprintf("%d stale: %v", len(staleDetails), staleDetails),
+			detail: fmt.Sprintf("%d stale: %v (run 'portree down --prune' to clear)", len(staleDetails), staleDetails),
 		}
 	}
 
