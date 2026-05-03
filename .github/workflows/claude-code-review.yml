@@ -11,7 +11,21 @@ permissions:
   id-token: write
 
 jobs:
+  debug-context:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print PR author association
+        run: |
+          echo "github.event_name: ${{ github.event_name }}"
+          echo "pull_request.author_association: '${{ github.event.pull_request.author_association }}'"
+          echo "pull_request.user.login: '${{ github.event.pull_request.user.login }}'"
+          echo "actor: '${{ github.actor }}'"
+          echo "head_ref: '${{ github.event.pull_request.head.ref }}'"
+          echo "base_ref: '${{ github.event.pull_request.base.ref }}'"
+
   review:
     uses: outcomeeng/gh-actions/.github/workflows/claude-code-review.yml@main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    with:
+      authorized_roles: '["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'
