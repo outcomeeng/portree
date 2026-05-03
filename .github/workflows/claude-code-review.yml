@@ -11,26 +11,13 @@ permissions:
   id-token: write
 
 jobs:
-  debug-context:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Print PR author association
-        run: |
-          echo "github.event_name: ${{ github.event_name }}"
-          echo "pull_request.author_association: '${{ github.event.pull_request.author_association }}'"
-          echo "pull_request.user.login: '${{ github.event.pull_request.user.login }}'"
-          echo "actor: '${{ github.actor }}'"
-          echo "head_ref: '${{ github.event.pull_request.head.ref }}'"
-          echo "base_ref: '${{ github.event.pull_request.base.ref }}'"
-
   review:
     uses: outcomeeng/gh-actions/.github/workflows/claude-code-review.yml@main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
     with:
-      # Workaround: this PR's event payload reports `author_association: NONE`
-      # even though the PR creator (simonheimlicher) is a MEMBER per the API.
-      # Possibly a GitHub event-cache quirk on PRs opened in fork repositories.
-      # The reusable workflow gates on `pull_request.author_association`, so we
-      # explicitly include NONE for this branch's auto-trigger to fire.
+      # Workaround for an event-payload quirk: PRs created in a forked repo
+      # surface `pull_request.author_association: NONE` even when the API
+      # returns MEMBER. The reusable workflow gates on this value, so NONE
+      # must be in the allowlist for the auto-review to fire on those PRs.
       authorized_roles: '["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"]'
