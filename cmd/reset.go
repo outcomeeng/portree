@@ -37,6 +37,14 @@ Use --all to reset every worktree's allocated ports in one invocation.
 After reset, the affected services are marked stopped in state. The next
 'portree up' starts cleanly.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Reset relies on `lsof` to enumerate listeners by port. macOS ships it,
+		// but on minimal Linux images (Alpine, slim Ubuntu, Docker bases) it's
+		// often missing. Fail upfront with a clear install hint rather than
+		// silently no-op'ing per port.
+		if _, err := exec.LookPath("lsof"); err != nil {
+			return fmt.Errorf("portree reset requires the `lsof` command, which is not in PATH; install lsof and retry")
+		}
+
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("getting current directory: %w", err)
@@ -162,7 +170,8 @@ After reset, the affected services are marked stopped in state. The next
 }
 
 // pidsListeningOn returns PIDs of processes listening on the given TCP port.
-// Uses lsof which is universally available on macOS and Linux.
+// Relies on `lsof`. Callers MUST verify lsof is on PATH before invoking
+// (the reset command does this upfront in its RunE).
 func pidsListeningOn(p int) []int {
 	cmd := exec.Command("lsof", "-nP", "-iTCP:"+strconv.Itoa(p), "-sTCP:LISTEN", "-t")
 	out, err := cmd.Output()

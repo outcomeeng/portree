@@ -76,9 +76,19 @@ func ensureProxyRunning(commonRoot string, https bool) error {
 		return fmt.Errorf("spawning proxy daemon: %w", err)
 	}
 
-	// Wait for the daemon to register itself in state.
+	// Watch for early daemon exit so a crash (bad flag, port already bound,
+	// missing dependency) surfaces immediately instead of waiting out the
+	// 3-second registration deadline.
+	exited := make(chan error, 1)
+	go func() { exited <- daemon.Wait() }()
+
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-exited:
+			return fmt.Errorf("proxy daemon exited before registering: %w; check %s", waitErr, logPath)
+		default:
+		}
 		var ready bool
 		var pid int
 		if err := store.WithLock(func() error {

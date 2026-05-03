@@ -179,6 +179,10 @@ func probeReachability(entries []lsEntry, timeout time.Duration) {
 	client := &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
+			// Probes target dev servers on `*.localhost` addresses with
+			// auto-generated self-signed certs (per ADR-003). The probe is
+			// loopback-only and never reaches the network — InsecureSkipVerify
+			// is intentional. //nolint:gosec // G402: dev-server probe over loopback
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
