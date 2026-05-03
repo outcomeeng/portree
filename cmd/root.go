@@ -12,8 +12,9 @@ import (
 
 var (
 	// Populated by PersistentPreRunE for subcommands.
-	repoRoot string
-	cfg      *config.Config
+	repoRoot  string
+	stateRoot string
+	cfg       *config.Config
 )
 
 var rootCmd = &cobra.Command{
@@ -48,7 +49,13 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("not inside a git repository")
 		}
 
+		stateRoot, err = git.MainWorktreeRoot(cwd)
+		if err != nil {
+			return fmt.Errorf("resolving main worktree root: %w", err)
+		}
+
 		logging.Verbose("repo root: %s", repoRoot)
+		logging.Verbose("state root: %s", stateRoot)
 
 		cfg, err = config.Load(repoRoot)
 		if err != nil {

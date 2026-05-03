@@ -30,14 +30,15 @@ var downCmd = &cobra.Command{
 			return fmt.Errorf("getting current directory: %w", err)
 		}
 
-		stateDir := filepath.Join(repoRoot, ".portree")
+		stateDir := filepath.Join(stateRoot, ".portree")
 		store, err := state.NewFileStore(stateDir)
 		if err != nil {
 			return fmt.Errorf("creating state store: %w", err)
 		}
 
-		// Handle --prune: remove orphaned state entries.
-		if downPrune {
+		// Standalone --prune (no --all, no --service): only prune. With other
+		// flags, --prune composes additively and runs after the stop loop.
+		if downPrune && !downAll && downService == "" {
 			return pruneOrphanedState(store, cwd)
 		}
 
@@ -90,6 +91,10 @@ var downCmd = &cobra.Command{
 			} else {
 				logging.Info("✓ %d %s stopped for %s", totalStopped, noun, trees[0].Branch)
 			}
+		}
+
+		if downPrune {
+			return pruneOrphanedState(store, cwd)
 		}
 
 		return nil

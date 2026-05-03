@@ -1,0 +1,7 @@
+{
+  "enabledPlugins": {
+    "develop@outcomeeng": true,
+    "spec-tree@outcomeeng": true,
+    "typescript@outcomeeng": true
+  }
+}
