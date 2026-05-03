@@ -1,4 +1,4 @@
-package cmd
+package proxy
 
 import (
 	"fmt"
@@ -14,14 +14,17 @@ import (
 	"github.com/fairy-pitta/portree/internal/state"
 )
 
-// ensureProxyRunning starts the proxy as a detached daemon if it isn't already
+// EnsureRunning starts the proxy as a detached daemon if it isn't already
 // running. Idempotent: a second call while the proxy is alive is a no-op.
 //
-// The daemon is spawned via re-exec of this binary with `proxy start`. The
-// child detaches into a new session (Setsid) so it survives the calling
+// The daemon is spawned via re-exec of the portree binary with `proxy start`.
+// The child detaches into a new session (Setsid) so it survives the calling
 // shell. stdout/stderr are redirected to .portree/logs/proxy.log so any
 // startup error is recoverable post-mortem.
-func ensureProxyRunning(commonRoot string, https bool) error {
+//
+// commonRoot must be the canonical state-and-config root (typically resolved
+// via git.MainWorktreeRoot).
+func EnsureRunning(commonRoot string, https bool) error {
 	stateDir := filepath.Join(commonRoot, ".portree")
 	store, err := state.NewFileStore(stateDir)
 	if err != nil {
@@ -110,10 +113,11 @@ func ensureProxyRunning(commonRoot string, https bool) error {
 	return fmt.Errorf("proxy did not start within timeout; check %s", logPath)
 }
 
-// releaseProxyIfUnused stops the proxy iff no worktree currently has running
-// services. Called after the stop loop, so the calling worktree's services
-// are already marked stopped — only services in other worktrees count.
-func releaseProxyIfUnused(commonRoot string) error {
+// ReleaseIfUnused stops the proxy iff no worktree currently has running
+// services. The calling site is responsible for stopping its own services
+// before invoking this — only services that remain alive after that count
+// toward "still in use".
+func ReleaseIfUnused(commonRoot string) error {
 	stateDir := filepath.Join(commonRoot, ".portree")
 	store, err := state.NewFileStore(stateDir)
 	if err != nil {
@@ -143,12 +147,12 @@ func releaseProxyIfUnused(commonRoot string) error {
 		return nil
 	}
 
-	return stopProxyDaemon(store)
+	return StopDaemon(store)
 }
 
-// stopProxyDaemon SIGTERMs the proxy PID recorded in state, with a SIGKILL
+// StopDaemon SIGTERMs the proxy PID recorded in state, with a SIGKILL
 // fallback after a grace window, then writes a stopped record.
-func stopProxyDaemon(store *state.FileStore) error {
+func StopDaemon(store *state.FileStore) error {
 	var proxyPID int
 	if err := store.WithLock(func() error {
 		st, err := store.Load()

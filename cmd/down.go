@@ -11,6 +11,7 @@ import (
 	"github.com/fairy-pitta/portree/internal/logging"
 	"github.com/fairy-pitta/portree/internal/port"
 	"github.com/fairy-pitta/portree/internal/process"
+	"github.com/fairy-pitta/portree/internal/proxy"
 	"github.com/fairy-pitta/portree/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -102,7 +103,7 @@ var downCmd = &cobra.Command{
 		}
 
 		if downReleaseProxy {
-			if err := releaseProxyIfUnused(commonRoot); err != nil {
+			if err := proxy.ReleaseIfUnused(commonRoot); err != nil {
 				return err
 			}
 		}

@@ -9,6 +9,7 @@ import (
 	"github.com/fairy-pitta/portree/internal/logging"
 	"github.com/fairy-pitta/portree/internal/port"
 	"github.com/fairy-pitta/portree/internal/process"
+	"github.com/fairy-pitta/portree/internal/proxy"
 	"github.com/fairy-pitta/portree/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -109,7 +110,7 @@ var upCmd = &cobra.Command{
 		}
 
 		if upEnsureProxy {
-			if err := ensureProxyRunning(commonRoot, upProxyHTTPS); err != nil {
+			if err := proxy.EnsureRunning(commonRoot, upProxyHTTPS); err != nil {
 				return err
 			}
 		}
