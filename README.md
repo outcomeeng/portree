@@ -132,32 +132,32 @@ portree open --service backend  # Opens http://main.localhost:8000
 
 ## Commands
 
-| Command                             | Description                                                                          |
-| ----------------------------------- | ------------------------------------------------------------------------------------ |
-| `portree init`                      | Create a `.portree.toml` configuration file                                          |
-| `portree up`                        | Start services for the current worktree (idempotent — already-running services stay) |
-| `portree up --all`                  | Start services for every worktree                                                    |
-| `portree up --service <name>`       | Start a single named service only                                                    |
-| `portree up --ensure-proxy`         | Also start the shared proxy in the background if it isn't already running            |
-| `portree up --ensure-proxy --https` | …with HTTPS (auto-generated certificates)                                            |
-| `portree down`                      | Stop services for the current worktree                                               |
-| `portree down --all`                | Stop services for every worktree                                                     |
-| `portree down --service <name>`     | Stop a single named service only                                                     |
-| `portree down --prune`              | Remove orphaned and stale state entries (no live process is signalled)               |
-| `portree down --release-proxy`      | Stop the shared proxy iff no other worktree still has running services               |
-| `portree ls`                        | List worktrees, services, ports, status, PIDs, and proxy URLs (with reachability)    |
-| `portree ls --json`                 | Same, as JSON for scripts and agents (includes `url`, `direct_url`, `reachable`)     |
-| `portree reset`                     | Hunt down processes bound to the current worktree's allocated service ports and kill |
-| `portree reset --all`               | Same for every worktree                                                              |
-| `portree reset --proxy-port`        | Also kill non-portree listeners on the configured proxy port(s)                      |
-| `portree dash`                      | Open the interactive TUI dashboard                                                   |
-| `portree proxy start`               | Start the reverse proxy in the foreground                                            |
-| `portree proxy start --https`       | …with HTTPS (auto-generated certificates)                                            |
-| `portree proxy stop`                | Stop the reverse proxy                                                               |
-| `portree trust`                     | Install the CA certificate into the system trust store                               |
-| `portree open`                      | Open the current worktree in a browser                                               |
-| `portree doctor`                    | Run diagnostic checks on config, ports, and state                                    |
-| `portree version`                   | Print version information                                                            |
+| Command                             | Description                                                                            |
+| ----------------------------------- | -------------------------------------------------------------------------------------- |
+| `portree init`                      | Create a `.portree.toml` configuration file                                            |
+| `portree up`                        | Start services for the current worktree (idempotent — already-running services stay)   |
+| `portree up --all`                  | Start services for every worktree                                                      |
+| `portree up --service <name>`       | Start a single named service only                                                      |
+| `portree up --ensure-proxy`         | Also start the shared proxy in the background if it isn't already running              |
+| `portree up --ensure-proxy --https` | …with HTTPS (auto-generated certificates)                                              |
+| `portree down`                      | Stop services for the current worktree                                                 |
+| `portree down --all`                | Stop services for every worktree                                                       |
+| `portree down --service <name>`     | Stop a single named service only                                                       |
+| `portree down --prune`              | Remove orphaned and stale state entries (no live process is signalled)                 |
+| `portree down --release-proxy`      | Stop the shared proxy only if no other worktree still has running services             |
+| `portree ls`                        | List worktrees, services, ports, status, PIDs, and proxy URLs (with reachability)      |
+| `portree ls --json`                 | Same, as JSON for scripts and agents (includes `url`, `direct_url`, `reachable`)       |
+| `portree reset`                     | Hunt down and kill any process bound to the current worktree's allocated service ports |
+| `portree reset --all`               | Same for every worktree                                                                |
+| `portree reset --proxy-port`        | Also kill non-portree listeners on the configured proxy port(s)                        |
+| `portree dash`                      | Open the interactive TUI dashboard                                                     |
+| `portree proxy start`               | Start the reverse proxy in the foreground                                              |
+| `portree proxy start --https`       | …with HTTPS (auto-generated certificates)                                              |
+| `portree proxy stop`                | Stop the reverse proxy                                                                 |
+| `portree trust`                     | Install the CA certificate into the system trust store                                 |
+| `portree open`                      | Open the current worktree in a browser                                                 |
+| `portree doctor`                    | Run diagnostic checks on config, ports, and state                                      |
+| `portree version`                   | Print version information                                                              |
 
 ---
 
