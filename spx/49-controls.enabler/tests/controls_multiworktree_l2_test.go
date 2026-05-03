@@ -316,6 +316,183 @@ proxy_port = 18000
 	}
 }
 
+// readProxyState returns (status, pid) from the state.json file at mainDir.
+func readProxyState(t *testing.T, mainDir string) (string, int) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(mainDir, ".portree", "state.json"))
+	if err != nil {
+		return "", 0
+	}
+	var st map[string]interface{}
+	if json.Unmarshal(raw, &st) != nil {
+		return "", 0
+	}
+	proxy, _ := st["proxy"].(map[string]interface{})
+	status, _ := proxy["status"].(string)
+	pidF, _ := proxy["pid"].(float64)
+	return status, int(pidF)
+}
+
+// waitForProxyStatus polls state.json until proxy.status matches `want` or the
+// timeout elapses. Returns the matching PID and whether the wait succeeded.
+func waitForProxyStatus(t *testing.T, mainDir, want string, timeout time.Duration) (int, bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, pid := readProxyState(t, mainDir)
+		if status == want {
+			return pid, true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return 0, false
+}
+
+// TestUpEnsureProxyStartsProxyInBackground verifies that `portree up --ensure-proxy`
+// daemonizes the proxy: the proxy keeps running after the up command returns,
+// state records it, and the proxy port accepts TCP connections.
+func TestUpEnsureProxyStartsProxyInBackground(t *testing.T) {
+	mainDir := setupTestRepo(t)
+
+	if _, stderr, code := runPortree(t, mainDir, "up", "--ensure-proxy"); code != 0 {
+		t.Fatalf("up --ensure-proxy: %d, %s", code, stderr)
+	}
+	t.Cleanup(func() {
+		runPortree(t, mainDir, "proxy", "stop")
+		runPortree(t, mainDir, "down", "--all")
+	})
+
+	pid, ok := waitForProxyStatus(t, mainDir, "running", 3*time.Second)
+	if !ok {
+		t.Fatal("proxy never registered as running in state")
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Errorf("proxy PID %d not alive after up --ensure-proxy: %v", pid, err)
+	}
+
+	// Proxy must accept connections on its configured port (19000 in test config).
+	deadline := time.Now().Add(2 * time.Second)
+	connected := false
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:19000", 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			connected = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !connected {
+		t.Errorf("proxy not accepting connections on port 19000")
+	}
+}
+
+// TestUpEnsureProxyIsIdempotent verifies that a second `up --ensure-proxy`
+// invocation does NOT restart an already-running proxy.
+func TestUpEnsureProxyIsIdempotent(t *testing.T) {
+	mainDir := setupTestRepo(t)
+
+	if _, stderr, code := runPortree(t, mainDir, "up", "--ensure-proxy"); code != 0 {
+		t.Fatalf("first up --ensure-proxy: %d, %s", code, stderr)
+	}
+	t.Cleanup(func() {
+		runPortree(t, mainDir, "proxy", "stop")
+		runPortree(t, mainDir, "down", "--all")
+	})
+
+	firstPID, ok := waitForProxyStatus(t, mainDir, "running", 3*time.Second)
+	if !ok {
+		t.Fatal("first up did not start proxy")
+	}
+
+	if _, stderr, code := runPortree(t, mainDir, "up", "--ensure-proxy"); code != 0 {
+		t.Fatalf("second up --ensure-proxy: %d, %s", code, stderr)
+	}
+	_, secondPID := readProxyState(t, mainDir)
+	if secondPID != firstPID {
+		t.Errorf("second `up --ensure-proxy` restarted proxy: PID %d → %d", firstPID, secondPID)
+	}
+}
+
+// TestDownReleaseProxyStopsProxyWhenLastOut verifies that `portree down --release-proxy`
+// stops the proxy when no other worktree has running services.
+func TestDownReleaseProxyStopsProxyWhenLastOut(t *testing.T) {
+	mainDir := setupTestRepo(t)
+
+	if _, stderr, code := runPortree(t, mainDir, "up", "--ensure-proxy"); code != 0 {
+		t.Fatalf("up --ensure-proxy: %d, %s", code, stderr)
+	}
+	t.Cleanup(func() {
+		runPortree(t, mainDir, "proxy", "stop")
+		runPortree(t, mainDir, "down", "--all")
+	})
+
+	if _, ok := waitForProxyStatus(t, mainDir, "running", 3*time.Second); !ok {
+		t.Fatal("proxy did not start")
+	}
+
+	if _, stderr, code := runPortree(t, mainDir, "down", "--release-proxy"); code != 0 {
+		t.Fatalf("down --release-proxy: %d, %s", code, stderr)
+	}
+
+	if _, ok := waitForProxyStatus(t, mainDir, "stopped", 3*time.Second); !ok {
+		status, pid := readProxyState(t, mainDir)
+		t.Errorf("proxy still running after `down --release-proxy` (last worktree); status=%q pid=%d", status, pid)
+	}
+
+	// Port 19000 must be free.
+	ln, err := net.Listen("tcp", "127.0.0.1:19000")
+	if err != nil {
+		t.Errorf("port 19000 still bound after release-proxy: %v", err)
+	} else {
+		_ = ln.Close()
+	}
+}
+
+// TestDownReleaseProxyKeepsProxyWhenOtherWorktreesRunning verifies that
+// `portree down --release-proxy` leaves the proxy alone when at least one
+// other worktree still has running services.
+func TestDownReleaseProxyKeepsProxyWhenOtherWorktreesRunning(t *testing.T) {
+	mainDir := setupTestRepo(t)
+	commitConfig(t, mainDir)
+
+	linkedDir := filepath.Join(t.TempDir(), "feature-worktree")
+	addWorktree(t, mainDir, linkedDir, "feature")
+
+	// Main starts services AND proxy.
+	if _, stderr, code := runPortree(t, mainDir, "up", "--ensure-proxy"); code != 0 {
+		t.Fatalf("up --ensure-proxy from main: %d, %s", code, stderr)
+	}
+	// Linked starts its services.
+	if _, stderr, code := runPortree(t, linkedDir, "up"); code != 0 {
+		t.Fatalf("up from linked: %d, %s", code, stderr)
+	}
+	t.Cleanup(func() {
+		runPortree(t, mainDir, "proxy", "stop")
+		runPortree(t, mainDir, "down", "--all")
+	})
+
+	proxyPID, ok := waitForProxyStatus(t, mainDir, "running", 3*time.Second)
+	if !ok {
+		t.Fatal("proxy did not start")
+	}
+
+	// Main releases — proxy must remain because feature worktree still has services.
+	if _, stderr, code := runPortree(t, mainDir, "down", "--release-proxy"); code != 0 {
+		t.Fatalf("down --release-proxy: %d, %s", code, stderr)
+	}
+
+	// Brief settling — give the release path time to (incorrectly) stop the proxy if buggy.
+	time.Sleep(300 * time.Millisecond)
+
+	if err := syscall.Kill(proxyPID, 0); err != nil {
+		t.Errorf("proxy PID %d killed even though feature worktree still running: %v", proxyPID, err)
+	}
+	if status, _ := readProxyState(t, mainDir); status != "running" {
+		t.Errorf("proxy state changed to %q; should remain running while feature worktree active", status)
+	}
+}
+
 // TestLsShowsProxyURLAndReachability verifies that `portree ls` surfaces the
 // proxy URL (http://{slug}.localhost:{proxy_port}) when the proxy is running
 // and probes its reachability. Without the URL in the output, ls is unhelpful

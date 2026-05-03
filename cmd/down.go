@@ -16,9 +16,10 @@ import (
 )
 
 var (
-	downAll     bool
-	downService string
-	downPrune   bool
+	downAll          bool
+	downService      string
+	downPrune        bool
+	downReleaseProxy bool
 )
 
 var downCmd = &cobra.Command{
@@ -95,7 +96,15 @@ var downCmd = &cobra.Command{
 		}
 
 		if downPrune {
-			return pruneOrphanedState(store, cwd)
+			if err := pruneOrphanedState(store, cwd); err != nil {
+				return err
+			}
+		}
+
+		if downReleaseProxy {
+			if err := releaseProxyIfUnused(commonRoot); err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -171,6 +180,7 @@ func pruneOrphanedState(store *state.FileStore, cwd string) error {
 func init() {
 	downCmd.Flags().BoolVar(&downAll, "all", false, "Stop services for all worktrees")
 	downCmd.Flags().StringVar(&downService, "service", "", "Stop only a specific service")
-	downCmd.Flags().BoolVar(&downPrune, "prune", false, "Remove state entries for deleted worktrees")
+	downCmd.Flags().BoolVar(&downPrune, "prune", false, "Remove state entries for deleted worktrees and reap stale entries")
+	downCmd.Flags().BoolVar(&downReleaseProxy, "release-proxy", false, "Stop the shared proxy iff no other worktree has running services")
 	rootCmd.AddCommand(downCmd)
 }

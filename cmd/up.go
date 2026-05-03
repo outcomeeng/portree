@@ -14,8 +14,10 @@ import (
 )
 
 var (
-	upAll     bool
-	upService string
+	upAll          bool
+	upService      string
+	upEnsureProxy  bool
+	upProxyHTTPS   bool
 )
 
 var upCmd = &cobra.Command{
@@ -106,6 +108,12 @@ var upCmd = &cobra.Command{
 			logging.Info("✓ %d %s already running (idempotent)", totalAlreadyRunning, noun)
 		}
 
+		if upEnsureProxy {
+			if err := ensureProxyRunning(commonRoot, upProxyHTTPS); err != nil {
+				return err
+			}
+		}
+
 		return nil
 	},
 }
@@ -113,5 +121,7 @@ var upCmd = &cobra.Command{
 func init() {
 	upCmd.Flags().BoolVar(&upAll, "all", false, "Start services for all worktrees")
 	upCmd.Flags().StringVar(&upService, "service", "", "Start only a specific service")
+	upCmd.Flags().BoolVar(&upEnsureProxy, "ensure-proxy", false, "Start the shared proxy if not already running (idempotent)")
+	upCmd.Flags().BoolVar(&upProxyHTTPS, "https", false, "When used with --ensure-proxy, start the proxy in HTTPS mode")
 	rootCmd.AddCommand(upCmd)
 }
