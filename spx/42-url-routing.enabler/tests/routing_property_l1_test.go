@@ -1,6 +1,7 @@
 package urlrouting_test
 
 import (
+	"crypto/tls"
 	"testing"
 
 	"github.com/fairy-pitta/portree/internal/config"
@@ -10,7 +11,9 @@ import (
 
 // TestSchemeIsConsistentWithinSession verifies that Scheme() returns the same
 // value throughout the lifetime of a ProxyServer — either always "http" or
-// always "https", never switching mid-session.
+// always "https", never switching mid-session. The property holds for both
+// the HTTP server (constructed with a nil TLS config) and the HTTPS server
+// (constructed with a non-nil TLS config).
 func TestSchemeIsConsistentWithinSession(t *testing.T) {
 	store, err := state.NewFileStore(t.TempDir())
 	if err != nil {
@@ -30,15 +33,26 @@ func TestSchemeIsConsistentWithinSession(t *testing.T) {
 
 	resolver := proxy.NewResolver(cfg, store)
 
-	// HTTP proxy: scheme must be "http" consistently.
-	httpSrv := proxy.NewProxyServer(resolver, nil)
-	first := httpSrv.Scheme()
-	for i := 0; i < 10; i++ {
-		if got := httpSrv.Scheme(); got != first {
-			t.Errorf("HTTP proxy Scheme() changed from %q to %q at call %d", first, got, i)
-		}
+	cases := []struct {
+		name      string
+		tlsConfig *tls.Config
+		want      string
+	}{
+		{"HTTP", nil, "http"},
+		{"HTTPS", &tls.Config{}, "https"},
 	}
-	if first != "http" {
-		t.Errorf("HTTP proxy Scheme() = %q, want 'http'", first)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := proxy.NewProxyServer(resolver, tc.tlsConfig)
+			first := srv.Scheme()
+			for i := 0; i < 10; i++ {
+				if got := srv.Scheme(); got != first {
+					t.Errorf("%s proxy Scheme() changed from %q to %q at call %d", tc.name, first, got, i)
+				}
+			}
+			if first != tc.want {
+				t.Errorf("%s proxy Scheme() = %q, want %q", tc.name, first, tc.want)
+			}
+		})
 	}
 }

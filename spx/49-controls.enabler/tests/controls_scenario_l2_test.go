@@ -181,15 +181,6 @@ proxy_port = 19000
 	}
 }
 
-// TestDoctorExitsZeroOnValidConfig verifies that `portree doctor` exits 0 for a valid config.
-func TestDoctorExitsZeroOnValidConfig(t *testing.T) {
-	dir := setupTestRepo(t)
-	_, _, exitCode := runPortree(t, dir, "doctor")
-	if exitCode != 0 {
-		t.Errorf("portree doctor exited %d on a valid config, want 0", exitCode)
-	}
-}
-
 // TestMissingConfigInstructsInit verifies that any portree command requiring
 // config surfaces the instruction to run `portree init` when .portree.toml is absent.
 func TestMissingConfigInstructsInit(t *testing.T) {

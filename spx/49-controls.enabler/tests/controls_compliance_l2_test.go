@@ -7,12 +7,28 @@ import (
 )
 
 // TestSuccessCommandExitsZero verifies that commands completing without error
-// exit with status 0 — required for script and agent compatibility.
+// exit with status 0 — required for script and agent compatibility. Covers
+// every read-only command exposed by the binary so the compliance rule is
+// genuinely tested across the surface, not just for doctor.
 func TestSuccessCommandExitsZero(t *testing.T) {
-	dir := setupTestRepo(t)
-	_, _, exitCode := runPortree(t, dir, "doctor")
-	if exitCode != 0 {
-		t.Errorf("portree doctor on valid config exited %d, want 0", exitCode)
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"version", []string{"version"}},
+		{"doctor", []string{"doctor"}},
+		{"ls", []string{"ls"}},
+		{"ls --json", []string{"ls", "--json"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupTestRepo(t)
+			stdout, stderr, exitCode := runPortree(t, dir, tc.args...)
+			if exitCode != 0 {
+				t.Errorf("portree %v on valid config exited %d, want 0\nstdout:\n%s\nstderr:\n%s",
+					tc.args, exitCode, stdout, stderr)
+			}
+		})
 	}
 }
 
